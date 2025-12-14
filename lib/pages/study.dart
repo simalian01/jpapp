@@ -144,18 +144,33 @@ Future<List<int>> pickStudyItemIds(
   required int limit,
 }) async {
   final today = epochDay(DateTime.now());
-  if (mode == StudyMode.due) {
-    // 到期：due_day<=today
-    final rows = await db.rawQuery('''
+if (mode == StudyMode.due) {
+  final dueRows = await db.rawQuery('''
+    SELECT i.id AS id
+    FROM items i
+    JOIN srs s ON s.item_id=i.id
+    WHERE i.deck=? AND i.level=? AND s.due_day<=?
+    ORDER BY s.due_day ASC
+    LIMIT ?;
+  ''', [deck, level, today, limit]);
+
+  final ids = dueRows.map((e) => (e['id'] as num).toInt()).toList();
+
+  if (ids.length < limit) {
+    final need = limit - ids.length;
+    final newRows = await db.rawQuery('''
       SELECT i.id AS id
       FROM items i
-      JOIN srs s ON s.item_id=i.id
-      WHERE i.deck=? AND i.level=? AND s.due_day<=?
-      ORDER BY s.due_day ASC
+      LEFT JOIN srs s ON s.item_id=i.id
+      WHERE i.deck=? AND i.level=? AND s.item_id IS NULL
+      ORDER BY i.id DESC
       LIMIT ?;
-    ''', [deck, level, today, limit]);
-    return rows.map((e) => (e['id'] as num).toInt()).toList();
+    ''', [deck, level, need]);
+    ids.addAll(newRows.map((e) => (e['id'] as num).toInt()));
   }
+
+  return ids;
+}
 
   if (mode == StudyMode.newOnly) {
     // 新词：没有 srs 记录
