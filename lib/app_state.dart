@@ -104,10 +104,10 @@ class AppModel extends ChangeNotifier {
     await _db?.close();
     _db = await openDatabase(path, readOnly: false);
 
-    // 关键：确保用户表存在（避免 no such table）
+    // 关键：确保用户表存在
     await ensureUserTables(_db!);
 
-    // 兼容：如果 content 表不存在，给出清晰错误
+    // 校验内容表是否存在
     final ok = await contentSchemaLooksValid(_db!);
     if (!ok) {
       _error = '数据库结构不正确：需要 items/media 表。建议用 scripts/build_db.py 从 Excel 生成。';
@@ -116,6 +116,21 @@ class AppModel extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+}
+
+/// ✅ 用一个具体的 Scope 继承 InheritedNotifier（避免直接 new InheritedNotifier 报 abstract）
+class AppScope extends InheritedNotifier<AppModel> {
+  const AppScope({
+    super.key,
+    required AppModel notifier,
+    required Widget child,
+  }) : super(notifier: notifier, child: child);
+
+  static AppModel of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
+    assert(scope != null, 'AppScope not found');
+    return scope!.notifier!;
   }
 }
 
@@ -138,15 +153,12 @@ class _AppRootState extends State<AppRoot> {
 
   @override
   Widget build(BuildContext context) {
-    return InheritedNotifier<AppModel>(
+    return AppScope(
       notifier: model,
       child: widget.child,
     );
   }
 }
 
-AppModel appModelOf(BuildContext context) {
-  final m = context.dependOnInheritedWidgetOfExactType<InheritedNotifier<AppModel>>()?.notifier;
-  assert(m != null, 'AppModel not found');
-  return m!;
-}
+/// 兼容你其他页面的调用方式
+AppModel appModelOf(BuildContext context) => AppScope.of(context);
