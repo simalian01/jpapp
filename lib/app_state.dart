@@ -106,9 +106,10 @@ class AppModel extends ChangeNotifier {
 
     // 关键：确保用户表存在
     await ensureUserTables(_db!);
-
-    // 校验内容表是否存在
     final ok = await contentSchemaLooksValid(_db!);
+    if (ok) {
+    await ensureContentIndexes(_db!); // ✅ 新增：补建内容索引，解决“新词很慢”
+    }
     if (!ok) {
       _error = '数据库结构不正确：需要 items/media 表。建议用 scripts/build_db.py 从 Excel 生成。';
     } else {
