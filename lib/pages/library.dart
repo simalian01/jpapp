@@ -36,8 +36,13 @@ class LibraryPage extends StatefulWidget {
 }
 
 class _LibraryPageState extends State<LibraryPage> {
-  String deck = '红宝书';
-  String level = '全部'; // ✅ 支持不筛等级
+  Database? _lastDb;
+
+  List<String> decks = [];
+  List<String> levels = ['全部'];
+
+  String deck = '';
+  String level = '全部';
   MemoryFilter memFilter = MemoryFilter.all;
 
   String query = '';
@@ -63,10 +68,50 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final m = appModelOf(context);
+    final db = m.db;
+    if (db == null) return;
+    if (!identical(db, _lastDb)) {
+      _lastDb = db;
+      _loadMeta(db);
+    }
+  }
+
+  @override
   void dispose() {
     _debounce?.cancel();
     _sc.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadMeta(Database db) async {
+    final deckRows = await db.rawQuery("""
+      SELECT DISTINCT deck FROM items
+      ORDER BY deck;
+    """);
+    decks = deckRows.map((e) => (e['deck'] as String).trim()).where((s) => s.isNotEmpty).toList();
+    if (decks.isEmpty) return;
+
+    deck = decks.contains('红宝书') ? '红宝书' : decks.first;
+    await _loadLevels(db, deck);
+
+    if (!mounted) return;
+    setState(() {});
+    await _reload();
+  }
+
+  Future<void> _loadLevels(Database db, String deck) async {
+    final rows = await db.rawQuery("""
+      SELECT DISTINCT level FROM items
+      WHERE deck=? AND level IS NOT NULL AND TRIM(level)!=''
+      ORDER BY level;
+    """, [deck]);
+
+    final lv = rows.map((e) => (e['level'] as String).trim()).where((s) => s.isNotEmpty).toList();
+    levels = ['全部', ...lv];
+    level = '全部';
   }
 
   Future<void> _reload() async {
@@ -126,13 +171,11 @@ class _LibraryPageState extends State<LibraryPage> {
     final where = <String>['i.deck=?'];
     final args = <Object?>[deck];
 
-    // ✅ 等级可选“全部”
     if (level != '全部') {
       where.add('i.level=?');
       args.add(level);
     }
 
-    // ✅ 记忆状态筛选（核心）
     switch (mem) {
       case MemoryFilter.all:
         break;
@@ -147,8 +190,6 @@ class _LibraryPageState extends State<LibraryPage> {
         where.add('s.item_id IS NOT NULL');
         break;
       case MemoryFilter.masteredOnly:
-        // 我这里做了一个“成熟产品式”的定义：
-        // reps>=4 且 interval>=21天 且 当前不在到期（due>today） => 基本可视为已掌握
         where.add('s.item_id IS NOT NULL AND s.reps >= 4 AND s.interval_days >= 21 AND s.due_day > ?');
         args.add(today);
         break;
@@ -156,7 +197,6 @@ class _LibraryPageState extends State<LibraryPage> {
 
     final qq = q.trim();
     if (qq.isNotEmpty) {
-      // ✅ 用 search_text LIKE（配合 idx_items_search_text 索引会很快）
       where.add('i.search_text LIKE ?');
       args.add('%$qq%');
     }
@@ -213,15 +253,15 @@ class _LibraryPageState extends State<LibraryPage> {
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        value: deck,
+                        value: deck.isEmpty ? null : deck,
                         decoration: const InputDecoration(labelText: '词库/书'),
-                        items: const [
-                          DropdownMenuItem(value: '红宝书', child: Text('红宝书')),
-                        ],
+                        items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
                         onChanged: !ready
                             ? null
                             : (v) async {
-                                setState(() => deck = v ?? deck);
+                                if (v == null) return;
+                                setState(() => deck = v);
+                                await _loadLevels(m.db!, deck);
                                 await _reload();
                               },
                       ),
@@ -231,18 +271,11 @@ class _LibraryPageState extends State<LibraryPage> {
                       child: DropdownButtonFormField<String>(
                         value: level,
                         decoration: const InputDecoration(labelText: '等级（可不筛）'),
-                        items: const [
-                          DropdownMenuItem(value: '全部', child: Text('全部')),
-                          DropdownMenuItem(value: 'N5', child: Text('N5')),
-                          DropdownMenuItem(value: 'N4', child: Text('N4')),
-                          DropdownMenuItem(value: 'N3', child: Text('N3')),
-                          DropdownMenuItem(value: 'N2', child: Text('N2')),
-                          DropdownMenuItem(value: 'N1', child: Text('N1')),
-                        ],
+                        items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
                         onChanged: !ready
                             ? null
                             : (v) async {
-                                setState(() => level = v ?? level);
+                                setState(() => level = v ?? '全部');
                                 await _reload();
                               },
                       ),
@@ -334,19 +367,13 @@ class _LibraryPageState extends State<LibraryPage> {
                   subtitle: Text(reading.isEmpty ? label : '$reading · $label'),
                   trailing: Chip(label: Text(label)),
                   onTap: () async {
-                    // ✅ 关键修复：把 db 和 baseDir 直接传进去，详情页不再依赖 AppScope（不会无限转圈）
-                    final m = appModelOf(context);
                     final db = m.db;
                     if (db == null) return;
 
                     await Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ItemDetailPage(
-                          db: db,
-                          itemId: id,
-                          baseDir: m.baseDir,
-                        ),
+                        builder: (_) => ItemDetailPage(db: db, itemId: id, baseDir: m.baseDir),
                       ),
                     );
 
@@ -362,10 +389,7 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 }
 
-/// ✅ 修复版详情页：
-/// - 不再 dependOn AppScope（避免 notifyListeners 引发 didChangeDependencies 循环）
-/// - initState 只 load 一次
-/// - 图片/音频存在性在 load 时一次性判断，不再 FutureBuilder 转圈
+/// ✅ 不转圈详情页（db/baseDir 由构造传入）
 class ItemDetailPage extends StatefulWidget {
   final Database db;
   final int itemId;
@@ -400,7 +424,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   @override
   void initState() {
     super.initState();
-    // ✅ 只加载一次
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
@@ -430,16 +453,15 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
 
     try {
       final it = await widget.db.query('items', where: 'id=?', whereArgs: [widget.itemId], limit: 1);
-      if (it.isEmpty) throw Exception('找不到单词');
+      if (it.isEmpty) throw Exception('找不到条目');
       item = it.first;
 
       media = await widget.db.query('media', where: 'item_id=?', whereArgs: [widget.itemId]);
       final sr = await widget.db.query('srs', where: 'item_id=?', whereArgs: [widget.itemId], limit: 1);
       srs = sr.isEmpty ? null : sr.first;
 
-      // 取一条音频/图片（你的红宝书是一词一音频一图片，这样最好用）
-      final a = media.cast<Map<String, Object?>>().where((e) => e['type'] == 'audio').toList();
-      final img = media.cast<Map<String, Object?>>().where((e) => e['type'] == 'image').toList();
+      final a = media.where((e) => e['type'] == 'audio').toList();
+      final img = media.where((e) => e['type'] == 'image').toList();
 
       audioPath = a.isEmpty ? null : resolveMediaPath((a.first['path'] as String).trim());
       imagePath = img.isEmpty ? null : resolveMediaPath((img.first['path'] as String).trim());
@@ -455,9 +477,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
 
   Future<void> _playAudio() async {
     if (audioPath == null || !audioExists) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('音频不存在：${audioPath ?? "(空)"}')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('音频不存在：${audioPath ?? "(空)"}')));
       return;
     }
     await player.setFilePath(audioPath!);
@@ -470,10 +490,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('单词详情'),
-        actions: [
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
-        ],
+        title: const Text('详情'),
+        actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
@@ -494,27 +512,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                             Text('かな：${(it?['reading'] as String?) ?? ''}'),
                             const SizedBox(height: 6),
                             Text('等级：${(it?['level'] as String?) ?? ''}'),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('记忆状态', style: TextStyle(fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 8),
-                            if (srs == null)
-                              const Text('新词（尚未学习）')
-                            else ...[
-                              Text('reps：${(srs!['reps'] as num).toInt()}'),
-                              Text('interval：${(srs!['interval_days'] as num).toInt()} 天'),
-                              Text('due_day：${(srs!['due_day'] as num).toInt()}'),
-                              Text('ease：${(srs!['ease'] as num).toDouble().toStringAsFixed(2)}'),
-                            ],
+                            const SizedBox(height: 6),
+                            Text('释义：${(it?['meaning'] as String?) ?? ''}'),
                           ],
                         ),
                       ),
@@ -532,16 +531,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                         OutlinedButton.icon(
                           onPressed: () {
                             if (imagePath == null || !imageExists) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('图片不存在：${imagePath ?? "(空)"}')),
-                              );
+                              ScaffoldMessenger.of(context)
+                                  .showSnackBar(SnackBar(content: Text('图片不存在：${imagePath ?? "(空)"}')));
                               return;
                             }
                             Navigator.push(
                               context,
-                              MaterialPageRoute(
-                                builder: (_) => _ImageViewer(path: imagePath!),
-                              ),
+                              MaterialPageRoute(builder: (_) => _ImageViewer(path: imagePath!)),
                             );
                           },
                           icon: const Icon(Icons.image),
