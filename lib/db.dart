@@ -32,9 +32,23 @@ Future<void> ensureUserTables(Database db) async {
   await db.execute('CREATE INDEX IF NOT EXISTS idx_srs_deck_level ON srs(deck, level);');
 }
 
+/// ✅ 内容索引：保证新词/搜索/筛选不卡（即使库里原本没建索引）
+Future<void> ensureContentIndexes(Database db) async {
+  // items(deck,level) 用于筛选
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_items_deck_level ON items(deck, level);');
+  // items(term) 用于浏览/排序/简单查询
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_items_term ON items(term);');
+  // search_text 用于 LIKE 搜索（非常关键）
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_items_search_text ON items(search_text);');
+  // media(item_id) 用于取音频/图片
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_media_item ON media(item_id);');
+}
+
 /// 判断导入的内容库是否符合本 App 的最小 schema（items/media）
 Future<bool> contentSchemaLooksValid(Database db) async {
-  final t = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('items','media');");
+  final t = await db.rawQuery(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('items','media');",
+  );
   final names = t.map((e) => e['name'] as String).toSet();
   return names.contains('items') && names.contains('media');
 }
@@ -64,16 +78,12 @@ SrsUpdate sm2Update({
   var l = lapses;
 
   if (grade <= 1) {
-    // Again：重置为短间隔
     l += 1;
     r = 0;
     interval = 0;
   } else {
     r += 1;
-    // ease 调整
-    // 参考 SM-2：EF' = EF + (0.1 - (5-q)*(0.08 + (5-q)*0.02))
-    // 我们 q=grade+1（把 1..4 映射到 2..5）
-    final q = grade + 1;
+    final q = grade + 1; // 2..5
     e = e + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
     if (e < 1.3) e = 1.3;
 
@@ -82,7 +92,6 @@ SrsUpdate sm2Update({
     } else if (r == 2) {
       interval = 3;
     } else {
-      // hard/good/easy
       final mult = grade == 2 ? 1.2 : (grade == 3 ? e : e * 1.3);
       interval = (interval * mult).round();
       if (interval < 1) interval = 1;
