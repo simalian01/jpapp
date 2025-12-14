@@ -1,178 +1,308 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-从你提供的 Excel（重点：红宝书 sheet）生成离线词库 sqlite。
-
-输出 schema（核心）：
-- items(id INTEGER PRIMARY KEY, deck TEXT, level TEXT, term TEXT, reading TEXT, sheet TEXT, search_text TEXT, data_json TEXT)
-- media(id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER, type TEXT, path TEXT)
-- meta(key TEXT PRIMARY KEY, value TEXT)
-
-说明：
-- term：优先用「汉字/外文」，否则用「假名」
-- reading：用「假名」
-- level：优先从音频文件名里提取 n1~n5（如 “01 n5-あ (2).mp3” -> N5）
-- image：来自「图源」列
-- audio：来自「音源路径」列
-"""
 import argparse
-import json
-import re
 import sqlite3
+import pandas as pd
+import re
 from pathlib import Path
 
-import openpyxl
+MARKER = r"\にほんご"
+MARKER2 = r"/にほんご/"
 
-LEVEL_RE = re.compile(r'(?i)\bn([1-5])\b')
-
-def norm(v):
-    if v is None:
+def norm_path(p: str) -> str:
+    if p is None:
         return ""
-    s = str(v).strip()
+    p = str(p).strip()
+    if not p or p.lower() == "nan":
+        return ""
+    return p.replace("\\", "/")
+
+def make_search_text(*parts) -> str:
+    s = " ".join([str(x) for x in parts if x is not None and str(x).strip() and str(x).lower() != "nan"])
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def extract_level(audio_path: str) -> str:
-    m = LEVEL_RE.search(audio_path.replace("\\", "/"))
-    if not m:
-        return ""
-    return f"N{m.group(1)}"
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--excel", required=True, help="Excel 文件路径")
-    ap.add_argument("--out", required=True, help="输出 sqlite 路径")
-    args = ap.parse_args()
-
-    xls = Path(args.excel)
-    out = Path(args.out)
-    if not xls.exists():
-        raise SystemExit(f"Excel not found: {xls}")
-
-    wb = openpyxl.load_workbook(xls, data_only=True)
-    if "红宝书" not in wb.sheetnames:
-        raise SystemExit("Excel 中找不到 sheet：红宝书")
-
-    ws = wb["红宝书"]
-
-    # header row 1
-    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
-    header_map = {}
-    for i, h in enumerate(headers, start=1):
-        if isinstance(h, str) and h.strip():
-            header_map[h.strip()] = i
-
-    # 需要的列
-    col_order = header_map.get("顺序", 1)
-    col_kana = header_map.get("假名")
-    col_kanji = header_map.get("汉字/外文")
-    col_img = header_map.get("图源")  # 图源出现两次，openpyxl 会取最后一次；我们后面再兼容
-    # 兼容：图源可能有两个同名列
-    img_cols = [i for i, h in enumerate(headers, start=1) if (isinstance(h, str) and h.strip() == "图源")]
-    if img_cols:
-        col_img = img_cols[-1]
-
-    col_audio = header_map.get("音源路径")
-    if col_audio is None:
-        # 有些版本可能只叫“音源”
-        audio_cols = [i for i, h in enumerate(headers, start=1) if (isinstance(h, str) and "音源" in h)]
-        col_audio = audio_cols[-1] if audio_cols else None
-
-    if col_kana is None or col_kanji is None or col_audio is None or col_img is None:
-        raise SystemExit(f"列不完整：假名={col_kana}, 汉字/外文={col_kanji}, 图源={col_img}, 音源路径={col_audio}")
-
-    # 建库
-    if out.exists():
-        out.unlink()
-
-    conn = sqlite3.connect(out)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA temp_store=MEMORY;")
-
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS meta(
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-
+def create_schema(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS items(
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       deck TEXT NOT NULL,
       level TEXT,
       term TEXT NOT NULL,
       reading TEXT,
-      sheet TEXT NOT NULL,
-      search_text TEXT,
-      data_json TEXT
+      meaning TEXT,
+      search_text TEXT
     );
-
+    """)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS media(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      path TEXT NOT NULL
+      type TEXT NOT NULL,   -- 'audio' | 'image'
+      path TEXT NOT NULL,
+      FOREIGN KEY(item_id) REFERENCES items(id)
     );
-
-    CREATE INDEX IF NOT EXISTS idx_items_deck_level ON items(deck, level);
-    CREATE INDEX IF NOT EXISTS idx_items_term ON items(term);
-    CREATE INDEX IF NOT EXISTS idx_media_item ON media(item_id);
     """)
+    # SRS tables (app uses these)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS srs(
+      item_id INTEGER PRIMARY KEY,
+      reps INTEGER NOT NULL DEFAULT 0,
+      interval_days INTEGER NOT NULL DEFAULT 0,
+      due_day INTEGER NOT NULL DEFAULT 0,
+      ease REAL NOT NULL DEFAULT 2.5,
+      last_day INTEGER NOT NULL DEFAULT 0
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reviews(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      day INTEGER NOT NULL,
+      item_id INTEGER NOT NULL,
+      rating TEXT NOT NULL
+    );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_items_deck ON items(deck);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_items_level ON items(level);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_items_search_text ON items(search_text);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_media_item ON media(item_id);")
+    conn.commit()
 
-    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", ("source_excel", str(xls)))
-    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", ("generated_at", __import__("datetime").datetime.now().isoformat()))
+def insert_item(conn, deck, term, level="", reading="", meaning="", audio="", image=""):
+    term = "" if term is None else str(term).strip()
+    if not term or term.lower() == "nan":
+        return None
+    deck = str(deck).strip()
+    level = "" if level is None else str(level).strip()
+    reading = "" if reading is None else str(reading).strip()
+    meaning = "" if meaning is None else str(meaning).strip()
 
-    # 数据起始：红宝书在你的文件里通常从第3行开始（第2行有杂项）
-    # 这里用“顺序”列是整数作为判断。
-    rows = []
-    for r in range(2, ws.max_row + 1):
-        order_val = ws.cell(row=r, column=col_order).value
-        if order_val is None:
-            continue
-        try:
-            item_id = int(order_val)
-        except Exception:
-            continue
+    search_text = make_search_text(deck, level, term, reading, meaning)
 
-        kana = norm(ws.cell(row=r, column=col_kana).value)
-        kanji = norm(ws.cell(row=r, column=col_kanji).value)
-        term = kanji if kanji else kana
-        if not term:
-            continue
-
-        img_path = norm(ws.cell(row=r, column=col_img).value)
-        audio_path = norm(ws.cell(row=r, column=col_audio).value)
-
-        level = extract_level(audio_path)
-        deck = "红宝书"
-        sheet = "红宝书"
-
-        search_text = " ".join([term, kana, kanji]).strip()
-        data = {
-            "kana": kana,
-            "kanji": kanji,
-            "excel_row": r,
-        }
-        rows.append((item_id, deck, level, term, kana, sheet, search_text, json.dumps(data, ensure_ascii=False), img_path, audio_path))
-
-    # 写入
-    conn.execute("BEGIN;")
-    conn.executemany(
-        "INSERT OR REPLACE INTO items(id,deck,level,term,reading,sheet,search_text,data_json) VALUES(?,?,?,?,?,?,?,?)",
-        [(rid, deck, level, term, reading, sheet, st, dj) for (rid, deck, level, term, reading, sheet, st, dj, _, _) in rows]
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO items(deck, level, term, reading, meaning, search_text) VALUES(?,?,?,?,?,?)",
+        (deck, level, term, reading, meaning, search_text),
     )
-    # media
-    media_rows = []
-    for (rid, deck, level, term, reading, sheet, st, dj, img_path, audio_path) in rows:
-        if img_path:
-            media_rows.append((rid, "image", img_path))
-        if audio_path:
-            media_rows.append((rid, "audio", audio_path))
-    conn.executemany("INSERT INTO media(item_id,type,path) VALUES(?,?,?)", media_rows)
-    conn.execute("COMMIT;")
+    item_id = cur.lastrowid
 
-    print(f"OK: {out} items={len(rows)} media={len(media_rows)}")
+    if audio:
+        ap = norm_path(audio)
+        if ap:
+            cur.execute("INSERT INTO media(item_id, type, path) VALUES(?,?,?)", (item_id, "audio", ap))
+    if image:
+        ip = norm_path(image)
+        if ip:
+            cur.execute("INSERT INTO media(item_id, type, path) VALUES(?,?,?)", (item_id, "image", ip))
+
+    return item_id
+
+def handle_red_book(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="红宝书")
+    # 核心列（你这个 4.2 版本里验证过）
+    col_kana = "假名"
+    col_kanji = "汉字/外文"
+    col_level = "Unnamed: 39"      # N1..N5
+    col_audio = "音源路径"
+    col_image = "图源.1"
+
+    for _, r in df.iterrows():
+        kana = r.get(col_kana, "")
+        kanji = r.get(col_kanji, "")
+        term = kanji if str(kanji).strip() and str(kanji).lower() != "nan" else kana
+        reading = kana
+        level = r.get(col_level, "")
+        audio = r.get(col_audio, "")
+        image = r.get(col_image, "")
+        insert_item(conn, "红宝书", term=term, level=level, reading=reading, meaning="", audio=audio, image=image)
+
+def handle_sheet1_adverbs(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="Sheet1")
+    # 序号, 副词, 词意, 例句...
+    for _, r in df.iterrows():
+        term = r.get("副词", "")
+        meaning = r.get("词意", "")
+        example = r.get("例句", "")
+        ex_mean = r.get("例句解释", "")
+        insert_item(conn, "副词（Sheet1）", term=term, level="", reading="", meaning=make_search_text(meaning, example, ex_mean))
+
+def handle_exam_countermeasure(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="考前对策")
+    for _, r in df.iterrows():
+        term = r.get("句型", "")
+        level = r.get("级别", "")
+        # 优先实际路径
+        img = r.get("实际路径", "") or r.get("路径", "")
+        page = r.get("页数", "")
+        meaning = f"页码：{page}" if str(page).strip() and str(page).lower() != "nan" else ""
+        insert_item(conn, "考前对策", term=term, level=level, reading="", meaning=meaning, image=img)
+
+def handle_shinkanzen(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="新完全掌握")
+    # 句型 + 路径
+    for _, r in df.iterrows():
+        term = r.get("句型", "")
+        img = r.get("路径", "")
+        p = r.get("页码", "")
+        meaning = f"页码：{p}" if str(p).strip() and str(p).lower() != "nan" else ""
+        insert_item(conn, "新完全掌握", term=term, meaning=meaning, image=img)
+
+def handle_donnatoki(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="どんな时どう使う")
+    for _, r in df.iterrows():
+        term = r.get("句型", "")
+        ref = r.get("参考", "")
+        page = r.get("页码", "")
+        meaning = make_search_text(f"参考：{ref}", f"页码：{page}")
+        insert_item(conn, "どんな时どう使う", term=term, meaning=meaning)
+
+def handle_new_textbook(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="新日本语教程")
+    # 这里分两类：图片索引 + 基本句型/词汇指导
+    for _, r in df.iterrows():
+        img = r.get("实际路径", "") or r.get("路径", "")
+        lesson = r.get("初1", "")  # 课号
+        pattern = r.get("基本句型", "")
+        vocabguide = r.get("词汇表达能力指导", "")
+
+        if img and str(img).strip().lower() != "nan":
+            term = f"初级1 第{lesson}课 图片"
+            insert_item(conn, "新日本语教程-图片", term=term, meaning="", image=img)
+
+        if pattern and str(pattern).strip().lower() != "nan":
+            insert_item(conn, "新日本语教程-基本句型", term=str(pattern).strip(), meaning=str(vocabguide).strip())
+
+def handle_diff(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="疑难辨析")
+    # 这张表列名很乱：我们只要把“对比点 + 两个表达 + 图片路径”收进去
+    # 找到第一个包含 F:\...\にほんご 的列作为实际路径
+    path_col = None
+    for c in df.columns:
+        s = df[c].astype(str)
+        if s.str.contains(r"\\にほんご\\", na=False).any():
+            path_col = c
+            break
+
+    for _, r in df.iterrows():
+        topic = r.get("终了", "")  # 例如：终了/替换/...
+        a1 = make_search_text(r.get("~", ""), r.get("がおわる", ""))
+        a2 = make_search_text(r.get("~.1", ""), r.get("をおわる", ""))
+        term = make_search_text(topic, f"{a1} vs {a2}")
+        img = r.get(path_col, "") if path_col is not None else ""
+        insert_item(conn, "疑难辨析", term=term, meaning="", image=img)
+
+def handle_vocab_diff(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="词汇辨析")
+    # 找到实际路径列
+    path_col = None
+    for c in df.columns:
+        s = df[c].astype(str)
+        if s.str.contains(r"\\にほんご\\", na=False).any():
+            path_col = c
+            break
+    # term 列：这张表第三列就是条目文本（书名那列）
+    text_col = df.columns[2]
+
+    for _, r in df.iterrows():
+        term = r.get(text_col, "")
+        img = r.get(path_col, "") if path_col is not None else ""
+        insert_item(conn, "词汇辨析", term=term, meaning="", image=img)
+
+def handle_grammar_newthinking(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="日语语法新思维")
+    for _, r in df.iterrows():
+        term = r.get("语法点", "") or r.get("順\n序", "")
+        page = r.get("页码", "")
+        insert_item(conn, "日语语法新思维", term=term, meaning=make_search_text("页码：", page))
+
+def handle_jpxy_dict(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="《日本语句型辞典》")
+    # 实际路径列：包含 にほんご
+    path_col = None
+    for c in df.columns:
+        s = df[c].astype(str)
+        if s.str.contains(r"\\にほんご\\", na=False).any():
+            path_col = c
+            break
+    # term 列通常是最后一列（例如 あか/あさ/…）
+    term_col = df.columns[-1]
+
+    for _, r in df.iterrows():
+        term = r.get(term_col, "")
+        img = r.get(path_col, "") if path_col is not None else ""
+        insert_item(conn, "日本语句型辞典", term=term, meaning="", image=img)
+
+def handle_blue_book(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="蓝宝书")
+    # 没有路径，作为目录索引
+    for _, r in df.iterrows():
+        t2015 = r.get("句型・2015年版目录", "")
+        lv2015 = r.get("级别.1", "")
+        p2015 = r.get("页数.2", "")
+        if str(t2015).strip() and str(t2015).lower() != "nan":
+            insert_item(conn, "蓝宝书-目录", term=t2015, level=lv2015, meaning=make_search_text("页码：", p2015))
+
+def handle_kanji(conn, xls: Path):
+    df = pd.read_excel(xls, sheet_name="日语汉字")
+    # 只保留“漢字、音訓”两列
+    if "漢字" in df.columns and "音訓" in df.columns:
+        for _, r in df.iterrows():
+            k = r.get("漢字", "")
+            onkun = r.get("音訓", "")
+            if str(k).strip() and str(k).lower() != "nan":
+                insert_item(conn, "日语汉字", term=k, meaning=str(onkun).strip())
+
+def handle_toc(conn, xls: Path, sheet: str):
+    df = pd.read_excel(xls, sheet_name=sheet)
+    # 纯目录（顾明耀/皮细庚/变形与活用等）——把第一列/第二列拼成 term
+    for _, r in df.iterrows():
+        parts = []
+        for c in df.columns[:6]:
+            v = r.get(c, "")
+            if str(v).strip() and str(v).lower() != "nan":
+                parts.append(str(v).strip())
+        term = " ".join(parts)
+        if term:
+            insert_item(conn, sheet, term=term, meaning="")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--excel", required=True, help="输入 Excel 路径")
+    ap.add_argument("--out", required=True, help="输出 sqlite 路径，例如 jp_study_content.sqlite")
+    args = ap.parse_args()
+
+    xls = Path(args.excel)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():
+        out.unlink()
+
+    conn = sqlite3.connect(out)
+    create_schema(conn)
+
+    # 逐个 sheet 导入（一次性）
+    handle_red_book(conn, xls)
+    handle_sheet1_adverbs(conn, xls)
+    handle_exam_countermeasure(conn, xls)
+    handle_shinkanzen(conn, xls)
+    handle_donnatoki(conn, xls)
+    handle_new_textbook(conn, xls)
+    handle_diff(conn, xls)
+    handle_vocab_diff(conn, xls)
+    handle_grammar_newthinking(conn, xls)
+    handle_jpxy_dict(conn, xls)
+    handle_blue_book(conn, xls)
+    handle_kanji(conn, xls)
+
+    # 这些是目录类，尽量也收进去
+    for sheet in ["顾明耀", "皮细庚", "变形与活用", "词典存放目录"]:
+        try:
+            handle_toc(conn, xls, sheet)
+        except Exception:
+            pass
+
+    conn.commit()
     conn.close()
+    print(f"OK -> {out}")
 
 if __name__ == "__main__":
     main()
