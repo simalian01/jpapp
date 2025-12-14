@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import 'setup.dart';
 import 'study.dart';
+import 'library.dart';
 import 'stats.dart';
 import 'settings.dart';
 
@@ -22,6 +23,7 @@ class _HomeShellState extends State<HomeShell> {
     final pages = [
       const SetupPage(),
       const StudyPage(),
+      const LibraryPage(), // ✅ 新增：词库浏览/搜索
       const StatsPage(),
       const SettingsPage(),
     ];
@@ -37,6 +39,7 @@ class _HomeShellState extends State<HomeShell> {
             destinations: const [
               NavigationDestination(icon: Icon(Icons.home), label: '初始化'),
               NavigationDestination(icon: Icon(Icons.school), label: '背单词'),
+              NavigationDestination(icon: Icon(Icons.menu_book), label: '词库'), // ✅
               NavigationDestination(icon: Icon(Icons.bar_chart), label: '统计'),
               NavigationDestination(icon: Icon(Icons.settings), label: '设置'),
             ],
