@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -7,6 +8,25 @@ import 'package:sqflite/sqflite.dart';
 
 import '../app_state.dart';
 import '../db.dart';
+
+enum MemoryFilter { all, newOnly, dueOnly, learnedOnly, masteredOnly }
+
+extension MemoryFilterLabel on MemoryFilter {
+  String get label {
+    switch (this) {
+      case MemoryFilter.all:
+        return '全部';
+      case MemoryFilter.newOnly:
+        return '新词';
+      case MemoryFilter.dueOnly:
+        return '待复习';
+      case MemoryFilter.learnedOnly:
+        return '已学习';
+      case MemoryFilter.masteredOnly:
+        return '已掌握';
+    }
+  }
+}
 
 class LibraryPage extends StatefulWidget {
   const LibraryPage({super.key});
@@ -17,7 +37,9 @@ class LibraryPage extends StatefulWidget {
 
 class _LibraryPageState extends State<LibraryPage> {
   String deck = '红宝书';
-  String level = 'N5';
+  String level = '全部'; // ✅ 支持不筛等级
+  MemoryFilter memFilter = MemoryFilter.all;
+
   String query = '';
   Timer? _debounce;
 
@@ -26,7 +48,9 @@ class _LibraryPageState extends State<LibraryPage> {
   bool loading = false;
   bool hasMore = true;
   int offset = 0;
-  static const pageSize = 50;
+  static const pageSize = 60;
+
+  int _shuffleSeed = 0;
 
   @override
   void initState() {
@@ -54,15 +78,31 @@ class _LibraryPageState extends State<LibraryPage> {
     await _loadMore();
   }
 
+  void _shuffleNow() {
+    setState(() {
+      _shuffleSeed++;
+      items.shuffle(Random(DateTime.now().millisecondsSinceEpoch ^ _shuffleSeed));
+    });
+  }
+
   Future<void> _loadMore() async {
     if (loading || !hasMore) return;
+
     final m = appModelOf(context);
     final db = m.db;
     if (db == null) return;
 
     setState(() => loading = true);
     try {
-      final rows = await _queryItems(db, deck, level, query, offset, pageSize);
+      final rows = await _queryItems(
+        db: db,
+        deck: deck,
+        level: level,
+        q: query,
+        mem: memFilter,
+        offset: offset,
+        limit: pageSize,
+      );
       setState(() {
         items.addAll(rows);
         offset += rows.length;
@@ -73,40 +113,73 @@ class _LibraryPageState extends State<LibraryPage> {
     }
   }
 
-  Future<List<Map<String, Object?>>> _queryItems(
-    Database db,
-    String deck,
-    String level,
-    String q,
-    int offset,
-    int limit,
-  ) async {
-    final qq = q.trim();
-    if (qq.isEmpty) {
-      return db.rawQuery('''
-        SELECT i.id, i.term, i.reading, i.level,
-               COALESCE(s.reps,0) AS reps,
-               COALESCE(s.due_day,0) AS due_day
-        FROM items i
-        LEFT JOIN srs s ON s.item_id=i.id
-        WHERE i.deck=? AND i.level=?
-        ORDER BY i.id DESC
-        LIMIT ? OFFSET ?;
-      ''', [deck, level, limit, offset]);
+  Future<List<Map<String, Object?>>> _queryItems({
+    required Database db,
+    required String deck,
+    required String level,
+    required String q,
+    required MemoryFilter mem,
+    required int offset,
+    required int limit,
+  }) async {
+    final today = epochDay(DateTime.now());
+    final where = <String>['i.deck=?'];
+    final args = <Object?>[deck];
+
+    // ✅ 等级可选“全部”
+    if (level != '全部') {
+      where.add('i.level=?');
+      args.add(level);
     }
 
-    // ✅ 用 LIKE + search_text 索引，速度会明显好
-    final like = '%$qq%';
-    return db.rawQuery('''
+    // ✅ 记忆状态筛选（核心）
+    switch (mem) {
+      case MemoryFilter.all:
+        break;
+      case MemoryFilter.newOnly:
+        where.add('s.item_id IS NULL');
+        break;
+      case MemoryFilter.dueOnly:
+        where.add('s.item_id IS NOT NULL AND s.due_day <= ?');
+        args.add(today);
+        break;
+      case MemoryFilter.learnedOnly:
+        where.add('s.item_id IS NOT NULL');
+        break;
+      case MemoryFilter.masteredOnly:
+        // 我这里做了一个“成熟产品式”的定义：
+        // reps>=4 且 interval>=21天 且 当前不在到期（due>today） => 基本可视为已掌握
+        where.add('s.item_id IS NOT NULL AND s.reps >= 4 AND s.interval_days >= 21 AND s.due_day > ?');
+        args.add(today);
+        break;
+    }
+
+    final qq = q.trim();
+    if (qq.isNotEmpty) {
+      // ✅ 用 search_text LIKE（配合 idx_items_search_text 索引会很快）
+      where.add('i.search_text LIKE ?');
+      args.add('%$qq%');
+    }
+
+    final sql = '''
       SELECT i.id, i.term, i.reading, i.level,
              COALESCE(s.reps,0) AS reps,
-             COALESCE(s.due_day,0) AS due_day
+             COALESCE(s.interval_days,0) AS interval_days,
+             COALESCE(s.due_day,0) AS due_day,
+             CASE
+               WHEN s.item_id IS NULL THEN 0
+               WHEN s.due_day <= $today THEN 1
+               WHEN s.reps >= 4 AND s.interval_days >= 21 AND s.due_day > $today THEN 3
+               ELSE 2
+             END AS mem_tag
       FROM items i
       LEFT JOIN srs s ON s.item_id=i.id
-      WHERE i.deck=? AND i.level=? AND i.search_text LIKE ?
+      WHERE ${where.join(' AND ')}
       ORDER BY i.id DESC
       LIMIT ? OFFSET ?;
-    ''', [deck, level, like, limit, offset]);
+    ''';
+
+    return db.rawQuery(sql, [...args, limit, offset]);
   }
 
   @override
@@ -114,123 +187,196 @@ class _LibraryPageState extends State<LibraryPage> {
     final m = appModelOf(context);
     final ready = m.db != null && m.error == null;
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: deck,
-                      decoration: const InputDecoration(labelText: '词库/书'),
-                      items: const [DropdownMenuItem(value: '红宝书', child: Text('红宝书'))],
-                      onChanged: (v) async {
-                        setState(() => deck = v ?? deck);
-                        await _reload();
-                      },
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('词库'),
+        actions: [
+          IconButton(
+            tooltip: '重新打乱当前列表',
+            onPressed: items.isEmpty ? null : _shuffleNow,
+            icon: const Icon(Icons.shuffle),
+          ),
+          IconButton(
+            tooltip: '重新加载',
+            onPressed: ready ? _reload : null,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: deck,
+                        decoration: const InputDecoration(labelText: '词库/书'),
+                        items: const [
+                          DropdownMenuItem(value: '红宝书', child: Text('红宝书')),
+                        ],
+                        onChanged: !ready
+                            ? null
+                            : (v) async {
+                                setState(() => deck = v ?? deck);
+                                await _reload();
+                              },
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: level,
-                      decoration: const InputDecoration(labelText: '等级'),
-                      items: const [
-                        DropdownMenuItem(value: 'N5', child: Text('N5')),
-                        DropdownMenuItem(value: 'N4', child: Text('N4')),
-                        DropdownMenuItem(value: 'N3', child: Text('N3')),
-                        DropdownMenuItem(value: 'N2', child: Text('N2')),
-                        DropdownMenuItem(value: 'N1', child: Text('N1')),
-                      ],
-                      onChanged: (v) async {
-                        setState(() => level = v ?? level);
-                        await _reload();
-                      },
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: level,
+                        decoration: const InputDecoration(labelText: '等级（可不筛）'),
+                        items: const [
+                          DropdownMenuItem(value: '全部', child: Text('全部')),
+                          DropdownMenuItem(value: 'N5', child: Text('N5')),
+                          DropdownMenuItem(value: 'N4', child: Text('N4')),
+                          DropdownMenuItem(value: 'N3', child: Text('N3')),
+                          DropdownMenuItem(value: 'N2', child: Text('N2')),
+                          DropdownMenuItem(value: 'N1', child: Text('N1')),
+                        ],
+                        onChanged: !ready
+                            ? null
+                            : (v) async {
+                                setState(() => level = v ?? level);
+                                await _reload();
+                              },
+                      ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                enabled: ready,
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.search),
-                  hintText: '搜索（假名/汉字/关键词）',
+                  ],
                 ),
-                onChanged: (v) {
-                  _debounce?.cancel();
-                  _debounce = Timer(const Duration(milliseconds: 300), () async {
-                    setState(() => query = v);
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<MemoryFilter>(
+                        value: memFilter,
+                        decoration: const InputDecoration(labelText: '记忆筛选'),
+                        items: MemoryFilter.values
+                            .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                            .toList(),
+                        onChanged: !ready
+                            ? null
+                            : (v) async {
+                                setState(() => memFilter = v ?? memFilter);
+                                await _reload();
+                              },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: '打乱（反复点击反复随机）',
+                      onPressed: items.isEmpty ? null : _shuffleNow,
+                      icon: const Icon(Icons.casino),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  enabled: ready,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: '搜索（假名/汉字/关键词）',
+                  ),
+                  onChanged: (v) {
+                    _debounce?.cancel();
+                    _debounce = Timer(const Duration(milliseconds: 250), () async {
+                      setState(() => query = v);
+                      await _reload();
+                    });
+                  },
+                ),
+                if (!ready) const Padding(padding: EdgeInsets.only(top: 8), child: Text('请先在【初始化】导入词库')),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView.builder(
+              controller: _sc,
+              itemCount: items.length + 1,
+              itemBuilder: (_, i) {
+                if (i == items.length) {
+                  if (loading) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (!hasMore) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: Text('没有更多了')),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                }
+
+                final row = items[i];
+                final id = (row['id'] as num).toInt();
+                final term = (row['term'] as String?) ?? '';
+                final reading = (row['reading'] as String?) ?? '';
+                final memTag = (row['mem_tag'] as num?)?.toInt() ?? 0;
+
+                final label = switch (memTag) {
+                  0 => '新词',
+                  1 => '待复习',
+                  3 => '已掌握',
+                  _ => '已学习',
+                };
+
+                return ListTile(
+                  title: Text(term),
+                  subtitle: Text(reading.isEmpty ? label : '$reading · $label'),
+                  trailing: Chip(label: Text(label)),
+                  onTap: () async {
+                    // ✅ 关键修复：把 db 和 baseDir 直接传进去，详情页不再依赖 AppScope（不会无限转圈）
+                    final m = appModelOf(context);
+                    final db = m.db;
+                    if (db == null) return;
+
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ItemDetailPage(
+                          db: db,
+                          itemId: id,
+                          baseDir: m.baseDir,
+                        ),
+                      ),
+                    );
+
                     await _reload();
-                  });
-                },
-              ),
-              const SizedBox(height: 8),
-              if (!ready) const Text('请先在【初始化】导入词库'),
-              if (ready && items.isEmpty && !loading)
-                FilledButton.icon(
-                  onPressed: _reload,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('加载词库列表'),
-                ),
-            ],
+                  },
+                );
+              },
+            ),
           ),
-        ),
-        const Divider(height: 1),
-        Expanded(
-          child: ListView.builder(
-            controller: _sc,
-            itemCount: items.length + 1,
-            itemBuilder: (_, i) {
-              if (i == items.length) {
-                if (loading) return const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator()));
-                if (!hasMore) return const Padding(padding: EdgeInsets.all(16), child: Center(child: Text('没有更多了')));
-                return const SizedBox.shrink();
-              }
-
-              final row = items[i];
-              final id = (row['id'] as num).toInt();
-              final term = (row['term'] as String?) ?? '';
-              final reading = (row['reading'] as String?) ?? '';
-              final reps = (row['reps'] as num?)?.toInt() ?? 0;
-              final dueDay = (row['due_day'] as num?)?.toInt() ?? 0;
-
-              final today = epochDay(DateTime.now());
-              final status = reps == 0 ? '新词' : (dueDay <= today ? '到期' : '已学');
-              final color = status == '到期'
-                  ? Colors.orange
-                  : (status == '新词' ? Colors.blueGrey : Colors.green);
-
-              return ListTile(
-                title: Text(term),
-                subtitle: Text(reading.isEmpty ? status : '$reading  ·  $status'),
-                trailing: Chip(label: Text(status), backgroundColor: color.withOpacity(0.15)),
-                onTap: () async {
-                  final m = appModelOf(context);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => ItemDetailPage(itemId: id, baseDir: m.baseDir)),
-                  );
-                  // 返回后刷新（可能背诵状态变了）
-                  await _reload();
-                },
-              );
-            },
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
+/// ✅ 修复版详情页：
+/// - 不再 dependOn AppScope（避免 notifyListeners 引发 didChangeDependencies 循环）
+/// - initState 只 load 一次
+/// - 图片/音频存在性在 load 时一次性判断，不再 FutureBuilder 转圈
 class ItemDetailPage extends StatefulWidget {
+  final Database db;
   final int itemId;
   final String baseDir;
 
-  const ItemDetailPage({super.key, required this.itemId, required this.baseDir});
+  const ItemDetailPage({
+    super.key,
+    required this.db,
+    required this.itemId,
+    required this.baseDir,
+  });
 
   @override
   State<ItemDetailPage> createState() => _ItemDetailPageState();
@@ -238,13 +384,25 @@ class ItemDetailPage extends StatefulWidget {
 
 class _ItemDetailPageState extends State<ItemDetailPage> {
   Map<String, Object?>? item;
-  List<Map<String, Object?>> media = [];
   Map<String, Object?>? srs;
+  List<Map<String, Object?>> media = [];
+
+  String? audioPath;
+  String? imagePath;
+  bool audioExists = false;
+  bool imageExists = false;
 
   bool loading = true;
   String? err;
 
   final player = AudioPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    // ✅ 只加载一次
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
 
   @override
   void dispose() {
@@ -264,30 +422,30 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     return '${widget.baseDir}/${p2.replaceFirst(RegExp(r'^/+'), '')}';
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _load();
-  }
-
   Future<void> _load() async {
-    final m = appModelOf(context);
-    final db = m.db;
-    if (db == null) return;
-
     setState(() {
       loading = true;
       err = null;
     });
 
     try {
-      final it = await db.query('items', where: 'id=?', whereArgs: [widget.itemId], limit: 1);
+      final it = await widget.db.query('items', where: 'id=?', whereArgs: [widget.itemId], limit: 1);
       if (it.isEmpty) throw Exception('找不到单词');
       item = it.first;
 
-      media = await db.query('media', where: 'item_id=?', whereArgs: [widget.itemId]);
-      final sr = await db.query('srs', where: 'item_id=?', whereArgs: [widget.itemId], limit: 1);
+      media = await widget.db.query('media', where: 'item_id=?', whereArgs: [widget.itemId]);
+      final sr = await widget.db.query('srs', where: 'item_id=?', whereArgs: [widget.itemId], limit: 1);
       srs = sr.isEmpty ? null : sr.first;
+
+      // 取一条音频/图片（你的红宝书是一词一音频一图片，这样最好用）
+      final a = media.cast<Map<String, Object?>>().where((e) => e['type'] == 'audio').toList();
+      final img = media.cast<Map<String, Object?>>().where((e) => e['type'] == 'image').toList();
+
+      audioPath = a.isEmpty ? null : resolveMediaPath((a.first['path'] as String).trim());
+      imagePath = img.isEmpty ? null : resolveMediaPath((img.first['path'] as String).trim());
+
+      audioExists = audioPath != null && File(audioPath!).existsSync();
+      imageExists = imagePath != null && File(imagePath!).existsSync();
     } catch (e) {
       err = '$e';
     } finally {
@@ -296,15 +454,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   }
 
   Future<void> _playAudio() async {
-    final a = media.firstWhere((e) => e['type'] == 'audio', orElse: () => {});
-    if (a.isEmpty) return;
-    final path = resolveMediaPath((a['path'] as String).trim());
-    final f = File(path);
-    if (!await f.exists()) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('音频不存在：$path')));
+    if (audioPath == null || !audioExists) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('音频不存在：${audioPath ?? "(空)"}')),
+      );
       return;
     }
-    await player.setFilePath(path);
+    await player.setFilePath(audioPath!);
     await player.play();
   }
 
@@ -313,7 +469,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     final it = item;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('单词详情')),
+      appBar: AppBar(
+        title: const Text('单词详情'),
+        actions: [
+          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+        ],
+      ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : err != null
@@ -327,7 +488,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text((it?['term'] as String?) ?? '', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                            Text((it?['term'] as String?) ?? '',
+                                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
                             Text('かな：${(it?['reading'] as String?) ?? ''}'),
                             const SizedBox(height: 6),
@@ -346,12 +508,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                             const Text('记忆状态', style: TextStyle(fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
                             if (srs == null)
-                              const Text('尚未学习（新词）')
+                              const Text('新词（尚未学习）')
                             else ...[
-                              Text('复习次数 reps：${(srs!['reps'] as num).toInt()}'),
-                              Text('间隔 interval_days：${(srs!['interval_days'] as num).toInt()} 天'),
-                              Text('到期 due_day：${(srs!['due_day'] as num).toInt()}（天数戳）'),
-                              Text('难度 ease：${(srs!['ease'] as num).toDouble().toStringAsFixed(2)}'),
+                              Text('reps：${(srs!['reps'] as num).toInt()}'),
+                              Text('interval：${(srs!['interval_days'] as num).toInt()} 天'),
+                              Text('due_day：${(srs!['due_day'] as num).toInt()}'),
+                              Text('ease：${(srs!['ease'] as num).toDouble().toStringAsFixed(2)}'),
                             ],
                           ],
                         ),
@@ -365,43 +527,54 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                         FilledButton.icon(
                           onPressed: _playAudio,
                           icon: const Icon(Icons.volume_up),
-                          label: const Text('播放音频'),
+                          label: Text(audioExists ? '播放音频' : '音频缺失'),
                         ),
                         OutlinedButton.icon(
-                          onPressed: _load,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('刷新'),
+                          onPressed: () {
+                            if (imagePath == null || !imageExists) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('图片不存在：${imagePath ?? "(空)"}')),
+                              );
+                              return;
+                            }
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => _ImageViewer(path: imagePath!),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.image),
+                          label: Text(imageExists ? '查看图片' : '图片缺失'),
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
-                    _buildImage(),
+                    if (imageExists && imagePath != null)
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.file(File(imagePath!), fit: BoxFit.contain),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
     );
   }
+}
 
-  Widget _buildImage() {
-    final img = media.firstWhere((e) => e['type'] == 'image', orElse: () => {});
-    if (img.isEmpty) return const SizedBox.shrink();
+class _ImageViewer extends StatelessWidget {
+  final String path;
+  const _ImageViewer({required this.path});
 
-    final path = resolveMediaPath((img['path'] as String).trim());
-    return FutureBuilder<bool>(
-      future: File(path).exists(),
-      builder: (_, snap) {
-        if (snap.data != true) {
-          return Card(child: Padding(padding: const EdgeInsets.all(12), child: Text('图片不存在：$path')));
-        }
-        return Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.file(File(path), fit: BoxFit.contain),
-            ),
-          ),
-        );
-      },
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('图片')),
+      body: Center(child: InteractiveViewer(child: Image.file(File(path)))),
     );
   }
 }
