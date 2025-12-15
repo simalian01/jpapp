@@ -12,6 +12,7 @@ import 'db.dart';
 class PrefKeys {
   static const dbPath = 'content_db_path';
   static const baseDir = 'media_base_dir';
+  static const onboarded = 'onboarded_once';
 }
 
 /// 全局 App 状态（数据库 + 设置）
@@ -19,6 +20,7 @@ class AppModel extends ChangeNotifier {
   Database? _db;
   String? _dbPath;
   String _baseDir = '/storage/emulated/0/にほんご';
+  bool _onboarded = false;
 
   bool _loading = false;
   String? _error;
@@ -28,6 +30,7 @@ class AppModel extends ChangeNotifier {
   String get baseDir => _baseDir;
   bool get loading => _loading;
   String? get error => _error;
+  bool get onboarded => _onboarded;
 
   Future<void> init() async {
     _loading = true;
@@ -37,6 +40,7 @@ class AppModel extends ChangeNotifier {
       final sp = await SharedPreferences.getInstance();
       _dbPath = sp.getString(PrefKeys.dbPath);
       _baseDir = sp.getString(PrefKeys.baseDir) ?? _baseDir;
+      _onboarded = sp.getBool(PrefKeys.onboarded) ?? false;
 
       await _prepareBundledDbIfNeeded();
 
@@ -58,6 +62,7 @@ class AppModel extends ChangeNotifier {
       await sp.setString(PrefKeys.dbPath, _dbPath!);
     }
     await sp.setString(PrefKeys.baseDir, _baseDir);
+    await sp.setBool(PrefKeys.onboarded, _onboarded);
   }
 
   /// 将内置词库拷贝到应用沙盒，避免手工导入
@@ -90,6 +95,12 @@ class AppModel extends ChangeNotifier {
 
   Future<void> setBaseDir(String dir) async {
     _baseDir = dir.trim();
+    await savePrefs();
+    notifyListeners();
+  }
+
+  Future<void> markOnboarded() async {
+    _onboarded = true;
     await savePrefs();
     notifyListeners();
   }
