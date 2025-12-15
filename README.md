@@ -66,4 +66,5 @@ python build_db.py --excel "文法词汇知识点索引4.2_win系统版.xlsx" --
 - `tooling/AndroidManifest.xml` 权限（无 package=）
 - `.github/workflows/build-apk.yml` Actions 构建
 - `scripts/build_db.py` 从 Excel 生成 sqlite 的脚本
+- `data/` 数据文件（例如生成的 `grammar_vocab_index_all_sheets.csv`、`data_manifest.json`）
 
