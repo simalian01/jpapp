@@ -20,7 +20,7 @@ class JPStudyApp extends StatelessWidget {
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.light),
         scaffoldBackgroundColor: const Color(0xFFF5F2FF),
-        cardTheme: CardTheme(
+        cardTheme: const CardThemeData(
           color: Colors.white,
           elevation: 1,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
