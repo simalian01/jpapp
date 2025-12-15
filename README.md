@@ -67,6 +67,10 @@ python tooling/build_sqlite_from_csv.py
 ---
 
 ## 协作与合并
-- `.gitattributes` 已声明 CSV/JSON/Dart 等为文本文件、数据库/APK 视为二进制，避免 PR 中被识别为不可合并的二进制冲突。
-- 如遇到合并冲突，优先保留最新的 `data/grammar_vocab_index_all_sheets.csv` 与脚本输出，再重新执行 `python tooling/build_sqlite_from_csv.py` 生成 sqlite。
+- `.gitattributes` 已声明 CSV/JSON/Dart 等为文本文件、数据库/APK 视为二进制，同时强制 `assets/jp_study_content.sqlite`、`assets/db_version.txt` 在合并时以当前分支为准（这些文件总是本地重新生成）。
+- 遇到冲突时建议流程：
+  1. `git checkout --ours assets/jp_study_content.sqlite assets/db_version.txt`（保留当前分支的生成产物）
+  2. 解决其余文本冲突（如 README、Dart 代码），确保 `data/grammar_vocab_index_all_sheets.csv` 选取最新版本。
+  3. 运行 `python tooling/build_sqlite_from_csv.py` 重新生成 sqlite + 版本文件，再 `git add .`。
+  4. `git rebase --continue` 或 `git merge --continue` 完成合并。
 

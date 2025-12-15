@@ -5,6 +5,11 @@
 *.yaml text
 *.yml text
 *.sh text eol=lf
-*.sqlite binary
-*.db binary
+data/grammar_vocab_index_all_sheets.csv -text merge=ours
+*.sqlite binary merge=ours
+*.db binary merge=ours
 *.apk binary
+
+# Generated asset + manifest: always regenerate locally, keep ours on merge
+assets/jp_study_content.sqlite merge=ours
+assets/db_version.txt merge=ours
