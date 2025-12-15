@@ -30,6 +30,16 @@ Future<void> ensureUserTables(Database db) async {
   await db.execute('CREATE INDEX IF NOT EXISTS idx_log_day ON review_log(day);');
   await db.execute('CREATE INDEX IF NOT EXISTS idx_srs_due ON srs(due_day);');
   await db.execute('CREATE INDEX IF NOT EXISTS idx_srs_deck_level ON srs(deck, level);');
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS usage_stats(
+      day INTEGER PRIMARY KEY,                   -- days since epoch
+      seconds INTEGER NOT NULL DEFAULT 0,        -- 累计使用时长（秒）
+      detail_opens INTEGER NOT NULL DEFAULT 0,   -- 打开详情页次数
+      remembered INTEGER NOT NULL DEFAULT 0,     -- 标记“记得”
+      forgotten INTEGER NOT NULL DEFAULT 0       -- 标记“不记得”
+    );
+  ''');
 }
 
 /// ✅ 内容索引：保证新词/搜索/筛选不卡（即使库里原本没建索引）
