@@ -81,21 +81,18 @@ class _StudyPageState extends State<StudyPage> {
     });
 
     try {
-      // 只把“有 N1~N5 level 的 deck”当作可背单词的词库
       final deckRows = await db.rawQuery("""
         SELECT DISTINCT deck
         FROM items
-        WHERE level LIKE 'N%'
         ORDER BY deck;
       """);
 
       decks = deckRows.map((e) => (e['deck'] as String).trim()).where((s) => s.isNotEmpty).toList();
       if (decks.isEmpty) {
-        throw Exception('数据库里没有找到可背单词的词库（需要 level=N1~N5）');
+        throw Exception('数据库里没有找到词库数据');
       }
 
-      // 默认优先红宝书
-      deck = decks.contains('红宝书') ? '红宝书' : decks.first;
+      deck = decks.first;
 
       await _loadLevels(db, deck);
 
@@ -113,12 +110,12 @@ class _StudyPageState extends State<StudyPage> {
     final rows = await db.rawQuery("""
       SELECT DISTINCT level
       FROM items
-      WHERE deck=? AND level LIKE 'N%'
+      WHERE deck=? AND level IS NOT NULL AND TRIM(level)!=''
       ORDER BY level DESC;
     """, [deck]);
 
     final lv = rows.map((e) => (e['level'] as String).trim()).where((s) => s.isNotEmpty).toList();
-    levels = ['全部', ...lv.reversed]; // N5..N1
+    levels = ['全部', ...lv.reversed];
   }
 
   @override
@@ -128,101 +125,111 @@ class _StudyPageState extends State<StudyPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('背单词')),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: !ready
-            ? const Text('请先在【初始化】导入词库（jp_study_content.sqlite）')
-            : loadingMeta
-                ? const Center(child: CircularProgressIndicator())
-                : metaErr != null
-                    ? Text('加载词库信息失败：$metaErr')
-                    : Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('词库：${m.dbPath ?? ""}', style: const TextStyle(fontSize: 12)),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: deck,
-                                      decoration: const InputDecoration(labelText: '词库/书'),
-                                      items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-                                      onChanged: (v) async {
-                                        if (v == null) return;
-                                        setState(() => deck = v);
-                                        await _loadLevels(m.db!, deck);
-                                        if (!levels.contains(level)) setState(() => level = '全部');
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: level,
-                                      decoration: const InputDecoration(labelText: '等级（可不选）'),
-                                      items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
-                                      onChanged: (v) => setState(() => level = v ?? '全部'),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              DropdownButtonFormField<StudyMode>(
-                                value: mode,
-                                decoration: const InputDecoration(labelText: '模式'),
-                                items: StudyMode.values
-                                    .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
-                                    .toList(),
-                                onChanged: (v) => setState(() => mode = v ?? mode),
-                              ),
-                              const SizedBox(height: 10),
-                              DropdownButtonFormField<int>(
-                                value: count,
-                                decoration: const InputDecoration(labelText: '数量'),
-                                items: const [10, 20, 30, 40, 60, 80]
-                                    .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
-                                    .toList(),
-                                onChanged: (v) => setState(() => count = v ?? 20),
-                              ),
-                              const SizedBox(height: 12),
-                              SizedBox(
-                                width: double.infinity,
-                                child: FilledButton.icon(
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('开始自测'),
-                                  onPressed: () async {
-                                    final db = m.db!;
-                                    final baseDir = m.baseDir;
-
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => StudySessionPage(
-                                          db: db,
-                                          baseDir: baseDir,
-                                          deck: deck,
-                                          level: level,
-                                          mode: mode,
-                                          targetCount: count,
-                                        ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFF7F4FF), Color(0xFFFFFFFF)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: !ready
+              ? const Center(child: Text('请先在【初始化】页面完成内置词库准备'))
+              : loadingMeta
+                  ? const Center(child: CircularProgressIndicator())
+                  : metaErr != null
+                      ? Text('加载词库信息失败：$metaErr')
+                      : Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('当前词库文件：${m.dbPath ?? ""}', style: const TextStyle(fontSize: 12)),
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: deck,
+                                        decoration: const InputDecoration(labelText: '词库/书'),
+                                        items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                                        onChanged: (v) async {
+                                          if (v == null) return;
+                                          setState(() => deck = v);
+                                          await _loadLevels(m.db!, deck);
+                                          if (!levels.contains(level)) setState(() => level = '全部');
+                                        },
                                       ),
-                                    );
-                                  },
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: level,
+                                        decoration: const InputDecoration(labelText: '等级（可不选）'),
+                                        items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
+                                        onChanged: (v) => setState(() => level = v ?? '全部'),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                '评分含义：Again=忘记（很快再出现）｜Hard=困难｜Good=记住｜Easy=秒懂（间隔更长）',
-                                style: TextStyle(fontSize: 12),
-                              ),
-                            ],
+                                const SizedBox(height: 14),
+                                DropdownButtonFormField<StudyMode>(
+                                  value: mode,
+                                  decoration: const InputDecoration(labelText: '模式'),
+                                  items: StudyMode.values
+                                      .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                                      .toList(),
+                                  onChanged: (v) => setState(() => mode = v ?? mode),
+                                ),
+                                const SizedBox(height: 14),
+                                DropdownButtonFormField<int>(
+                                  value: count,
+                                  decoration: const InputDecoration(labelText: '数量'),
+                                  items: const [10, 20, 30, 40, 60, 80]
+                                      .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
+                                      .toList(),
+                                  onChanged: (v) => setState(() => count = v ?? 20),
+                                ),
+                                const SizedBox(height: 18),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: FilledButton.icon(
+                                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                                    icon: const Icon(Icons.play_arrow_rounded),
+                                    label: const Text('开始自测'),
+                                    onPressed: () async {
+                                      final db = m.db!;
+                                      final baseDir = m.baseDir;
+
+                                      await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => StudySessionPage(
+                                            db: db,
+                                            baseDir: baseDir,
+                                            deck: deck,
+                                            level: level,
+                                            mode: mode,
+                                            targetCount: count,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                const Text(
+                                  '评分含义：Again=忘记（很快再出现）｜Hard=困难｜Good=记住｜Easy=秒懂（间隔更长）',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
+        ),
       ),
     );
   }
@@ -236,7 +243,7 @@ class StudySessionPage extends StatefulWidget {
   final String baseDir;
 
   final String deck;
-  final String level; // '全部' or N1..N5
+  final String level; // '全部' 或数据表里的 level 标记
   final StudyMode mode;
   final int targetCount;
 
@@ -334,7 +341,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
     required int targetCount,
   }) async {
     final today = epochDay(DateTime.now());
-    final where = <String>['i.deck=?', "i.level LIKE 'N%'"];
+    final where = <String>['i.deck=?'];
     final args = <Object?>[deck];
 
     if (level != '全部') {
@@ -436,61 +443,72 @@ class _StudySessionPageState extends State<StudySessionPage> {
     final it = item;
     if (it == null) return;
     final id = (it['id'] as num).toInt();
+    final deck = (it['deck'] as String?) ?? widget.deck;
+    final level = (it['level'] as String?) ?? widget.level;
 
     final today = epochDay(DateTime.now());
 
-    // 读现有 srs
-    double ease = (srs?['ease'] as num?)?.toDouble() ?? 2.5;
-    int reps = (srs?['reps'] as num?)?.toInt() ?? 0;
-    int interval = (srs?['interval_days'] as num?)?.toInt() ?? 0;
+    final ease = (srs?['ease'] as num?)?.toDouble() ?? 2.5;
+    final reps = (srs?['reps'] as num?)?.toInt() ?? 0;
+    final interval = (srs?['interval_days'] as num?)?.toInt() ?? 0;
+    final lapses = (srs?['lapses'] as num?)?.toInt() ?? 0;
 
-    // 简化 SM-2（足够成熟、稳定）
-    switch (r) {
-      case Rating.again:
-        ease = max(1.3, ease - 0.2);
-        reps = 0;
-        interval = 1;
-        break;
-      case Rating.hard:
-        ease = max(1.3, ease - 0.05);
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * 1.2).round()));
-        break;
-      case Rating.good:
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * ease).round()));
-        break;
-      case Rating.easy:
-        ease = min(3.0, ease + 0.05);
-        reps += 1;
-        interval = max(2, (interval == 0 ? 2 : (interval * ease * 1.3).round()));
-        break;
-    }
+    final grade = switch (r) {
+      Rating.again => 1,
+      Rating.hard => 2,
+      Rating.good => 3,
+      Rating.easy => 4,
+    };
 
-    final due = today + interval;
+    final next = sm2Update(
+      today: today,
+      ease: ease,
+      intervalDays: interval,
+      reps: reps,
+      lapses: lapses,
+      grade: grade,
+    );
 
     await widget.db.transaction((txn) async {
       await txn.execute("""
-        INSERT INTO srs(item_id, reps, interval_days, due_day, ease, last_day)
-        VALUES(?,?,?,?,?,?)
+        INSERT INTO srs(item_id, deck, level, state, ease, interval_days, due_day, reps, lapses, last_review_day)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(item_id) DO UPDATE SET
+          deck=excluded.deck,
+          level=excluded.level,
+          state=excluded.state,
           reps=excluded.reps,
           interval_days=excluded.interval_days,
           due_day=excluded.due_day,
           ease=excluded.ease,
-          last_day=excluded.last_day;
-      """, [id, reps, interval, due, ease, today]);
+          lapses=excluded.lapses,
+          last_review_day=excluded.last_review_day;
+      """, [
+        id,
+        deck,
+        level,
+        next.state,
+        next.ease,
+        next.intervalDays,
+        next.dueDay,
+        next.reps,
+        next.lapses,
+        today,
+      ]);
 
       await txn.execute("""
-        INSERT INTO reviews(day, item_id, rating)
-        VALUES(?,?,?);
-      """, [today, id, r.label]);
+        INSERT INTO review_log(day, item_id, grade, ts)
+        VALUES(?,?,?,?)
+      """, [today, id, grade, unixSeconds()]);
     });
 
     // 下一题
     if (idx + 1 >= ids.length) {
       if (mounted) {
         Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('本轮已完成，稍后可在统计查看复习记录')),
+        );
       }
       return;
     }

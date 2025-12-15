@@ -1,0 +1,9 @@
+{
+  "source": "data/grammar_vocab_index_all_sheets.csv",
+  "rows": 32073,
+  "generated_at": "2025-12-15T12:33:09.021273Z",
+  "csv_sha256": "578993f8dee195c5742d9efccb1c4eaff3926be002985f0e58522a97dae5bd19",
+  "missing_term": 0,
+  "missing_reading": 4763,
+  "missing_meaning": 79
+}
