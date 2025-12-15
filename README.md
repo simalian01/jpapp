@@ -29,7 +29,7 @@ python tooling/build_sqlite_from_csv.py
 ```
 
 脚本会将 sqlite 写入 `assets/jp_study_content.sqlite`，并生成 `assets/db_version.txt`（包含 CSV 的 hash/行数）。
-应用启动时会对比该版本号，自动刷新内置词库到沙盒，避免升级后仍使用旧数据。
+应用启动时会对比该版本号自动刷新内置词库到沙盒，避免升级后仍使用旧数据。
 
 ---
 
