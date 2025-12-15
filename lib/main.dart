@@ -15,7 +15,21 @@ class JPStudyApp extends StatelessWidget {
     return MaterialApp(
       title: 'JP Study Offline',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true),
+      theme: () {
+        final base = ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo);
+        return base.copyWith(
+          scaffoldBackgroundColor: const Color(0xfff7f7fb),
+          cardTheme: base.cardTheme.copyWith(
+            elevation: 0,
+            color: Colors.white,
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          appBarTheme: base.appBarTheme.copyWith(centerTitle: true, elevation: 0),
+          inputDecorationTheme:
+              base.inputDecorationTheme.copyWith(border: const OutlineInputBorder()),
+        );
+      }(),
       home: const AppRoot(child: HomeShell()),
     );
   }
