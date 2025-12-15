@@ -125,101 +125,111 @@ class _StudyPageState extends State<StudyPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('背单词')),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: !ready
-            ? const Text('请先在【初始化】页面完成内置词库准备')
-            : loadingMeta
-                ? const Center(child: CircularProgressIndicator())
-                : metaErr != null
-                    ? Text('加载词库信息失败：$metaErr')
-                    : Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('词库：${m.dbPath ?? ""}', style: const TextStyle(fontSize: 12)),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: deck,
-                                      decoration: const InputDecoration(labelText: '词库/书'),
-                                      items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-                                      onChanged: (v) async {
-                                        if (v == null) return;
-                                        setState(() => deck = v);
-                                        await _loadLevels(m.db!, deck);
-                                        if (!levels.contains(level)) setState(() => level = '全部');
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: level,
-                                      decoration: const InputDecoration(labelText: '等级（可不选）'),
-                                      items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
-                                      onChanged: (v) => setState(() => level = v ?? '全部'),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              DropdownButtonFormField<StudyMode>(
-                                value: mode,
-                                decoration: const InputDecoration(labelText: '模式'),
-                                items: StudyMode.values
-                                    .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
-                                    .toList(),
-                                onChanged: (v) => setState(() => mode = v ?? mode),
-                              ),
-                              const SizedBox(height: 10),
-                              DropdownButtonFormField<int>(
-                                value: count,
-                                decoration: const InputDecoration(labelText: '数量'),
-                                items: const [10, 20, 30, 40, 60, 80]
-                                    .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
-                                    .toList(),
-                                onChanged: (v) => setState(() => count = v ?? 20),
-                              ),
-                              const SizedBox(height: 12),
-                              SizedBox(
-                                width: double.infinity,
-                                child: FilledButton.icon(
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('开始自测'),
-                                  onPressed: () async {
-                                    final db = m.db!;
-                                    final baseDir = m.baseDir;
-
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => StudySessionPage(
-                                          db: db,
-                                          baseDir: baseDir,
-                                          deck: deck,
-                                          level: level,
-                                          mode: mode,
-                                          targetCount: count,
-                                        ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFF7F4FF), Color(0xFFFFFFFF)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: !ready
+              ? const Center(child: Text('请先在【初始化】页面完成内置词库准备'))
+              : loadingMeta
+                  ? const Center(child: CircularProgressIndicator())
+                  : metaErr != null
+                      ? Text('加载词库信息失败：$metaErr')
+                      : Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('当前词库文件：${m.dbPath ?? ""}', style: const TextStyle(fontSize: 12)),
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: deck,
+                                        decoration: const InputDecoration(labelText: '词库/书'),
+                                        items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                                        onChanged: (v) async {
+                                          if (v == null) return;
+                                          setState(() => deck = v);
+                                          await _loadLevels(m.db!, deck);
+                                          if (!levels.contains(level)) setState(() => level = '全部');
+                                        },
                                       ),
-                                    );
-                                  },
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: level,
+                                        decoration: const InputDecoration(labelText: '等级（可不选）'),
+                                        items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
+                                        onChanged: (v) => setState(() => level = v ?? '全部'),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                '评分含义：Again=忘记（很快再出现）｜Hard=困难｜Good=记住｜Easy=秒懂（间隔更长）',
-                                style: TextStyle(fontSize: 12),
-                              ),
-                            ],
+                                const SizedBox(height: 14),
+                                DropdownButtonFormField<StudyMode>(
+                                  value: mode,
+                                  decoration: const InputDecoration(labelText: '模式'),
+                                  items: StudyMode.values
+                                      .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                                      .toList(),
+                                  onChanged: (v) => setState(() => mode = v ?? mode),
+                                ),
+                                const SizedBox(height: 14),
+                                DropdownButtonFormField<int>(
+                                  value: count,
+                                  decoration: const InputDecoration(labelText: '数量'),
+                                  items: const [10, 20, 30, 40, 60, 80]
+                                      .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
+                                      .toList(),
+                                  onChanged: (v) => setState(() => count = v ?? 20),
+                                ),
+                                const SizedBox(height: 18),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: FilledButton.icon(
+                                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                                    icon: const Icon(Icons.play_arrow_rounded),
+                                    label: const Text('开始自测'),
+                                    onPressed: () async {
+                                      final db = m.db!;
+                                      final baseDir = m.baseDir;
+
+                                      await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => StudySessionPage(
+                                            db: db,
+                                            baseDir: baseDir,
+                                            deck: deck,
+                                            level: level,
+                                            mode: mode,
+                                            targetCount: count,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                const Text(
+                                  '评分含义：Again=忘记（很快再出现）｜Hard=困难｜Good=记住｜Easy=秒懂（间隔更长）',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
+        ),
       ),
     );
   }

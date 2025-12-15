@@ -1,0 +1,25 @@
+*.csv text diff=csv
+*.json text
+*.md text
+*.dart text eol=lf
+*.yaml text
+*.yml text
+*.sh text eol=lf
+data/grammar_vocab_index_all_sheets.csv -text merge=ours
+*.sqlite binary merge=ours
+*.db binary merge=ours
+*.apk binary
+
+# Generated asset + manifest: always regenerate locally, keep ours on merge
+assets/jp_study_content.sqlite merge=ours
+assets/db_version.txt merge=ours
+
+# Keep app scaffolding consistent across branches to avoid noisy conflicts
+README.md merge=ours
+pubspec.yaml merge=ours
+lib/main.dart merge=ours
+lib/app_state.dart merge=ours
+lib/pages/library.dart merge=ours
+lib/pages/setup.dart merge=ours
+lib/pages/study.dart merge=ours
+tooling/build_sqlite_from_csv.py merge=ours
