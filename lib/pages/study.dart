@@ -81,21 +81,18 @@ class _StudyPageState extends State<StudyPage> {
     });
 
     try {
-      // 只把“有 N1~N5 level 的 deck”当作可背单词的词库
       final deckRows = await db.rawQuery("""
         SELECT DISTINCT deck
         FROM items
-        WHERE level LIKE 'N%'
         ORDER BY deck;
       """);
 
       decks = deckRows.map((e) => (e['deck'] as String).trim()).where((s) => s.isNotEmpty).toList();
       if (decks.isEmpty) {
-        throw Exception('数据库里没有找到可背单词的词库（需要 level=N1~N5）');
+        throw Exception('数据库里没有找到词库数据');
       }
 
-      // 默认优先红宝书
-      deck = decks.contains('红宝书') ? '红宝书' : decks.first;
+      deck = decks.first;
 
       await _loadLevels(db, deck);
 
@@ -113,12 +110,12 @@ class _StudyPageState extends State<StudyPage> {
     final rows = await db.rawQuery("""
       SELECT DISTINCT level
       FROM items
-      WHERE deck=? AND level LIKE 'N%'
+      WHERE deck=? AND level IS NOT NULL AND TRIM(level)!=''
       ORDER BY level DESC;
     """, [deck]);
 
     final lv = rows.map((e) => (e['level'] as String).trim()).where((s) => s.isNotEmpty).toList();
-    levels = ['全部', ...lv.reversed]; // N5..N1
+    levels = ['全部', ...lv.reversed];
   }
 
   @override
@@ -131,7 +128,7 @@ class _StudyPageState extends State<StudyPage> {
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: !ready
-            ? const Text('请先在【初始化】导入词库（jp_study_content.sqlite）')
+            ? const Text('请先在【初始化】页面完成内置词库准备')
             : loadingMeta
                 ? const Center(child: CircularProgressIndicator())
                 : metaErr != null
@@ -236,7 +233,7 @@ class StudySessionPage extends StatefulWidget {
   final String baseDir;
 
   final String deck;
-  final String level; // '全部' or N1..N5
+  final String level; // '全部' 或数据表里的 level 标记
   final StudyMode mode;
   final int targetCount;
 
@@ -334,7 +331,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
     required int targetCount,
   }) async {
     final today = epochDay(DateTime.now());
-    final where = <String>['i.deck=?', "i.level LIKE 'N%'"];
+    final where = <String>['i.deck=?'];
     final args = <Object?>[deck];
 
     if (level != '全部') {

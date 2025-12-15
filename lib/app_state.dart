@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -37,6 +38,8 @@ class AppModel extends ChangeNotifier {
       _dbPath = sp.getString(PrefKeys.dbPath);
       _baseDir = sp.getString(PrefKeys.baseDir) ?? _baseDir;
 
+      await _prepareBundledDbIfNeeded();
+
       if (_dbPath != null) {
         await openContentDb(_dbPath!);
       }
@@ -55,6 +58,23 @@ class AppModel extends ChangeNotifier {
       await sp.setString(PrefKeys.dbPath, _dbPath!);
     }
     await sp.setString(PrefKeys.baseDir, _baseDir);
+  }
+
+  /// 将内置词库拷贝到应用沙盒，避免手工导入
+  Future<void> _prepareBundledDbIfNeeded() async {
+    if (_dbPath != null && await File(_dbPath!).exists()) return;
+
+    final docDir = await getApplicationDocumentsDirectory();
+    final destPath = '${docDir.path}/jp_study_content.sqlite';
+    final dest = File(destPath);
+
+    if (!await dest.exists()) {
+      final data = await rootBundle.load('assets/jp_study_content.sqlite');
+      await dest.writeAsBytes(data.buffer.asUint8List());
+    }
+
+    _dbPath = destPath;
+    await savePrefs();
   }
 
   Future<void> requestAllFilesAccess() async {
