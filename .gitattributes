@@ -5,6 +5,14 @@
 *.yaml text
 *.yml text
 *.sh text eol=lf
+
+# Treat generated binaries as binary to avoid meaningless diff noise
+*.sqlite binary
+*.db binary
+*.apk binary
+
+# Ensure main CSV source keeps line endings stable but allow normal merges
+data/grammar_vocab_index_all_sheets.csv -text
 data/grammar_vocab_index_all_sheets.csv -text merge=ours
 *.sqlite binary merge=ours
 *.db binary merge=ours
