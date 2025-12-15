@@ -20,28 +20,59 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final m = appModelOf(context);
 
-    final pages = [
-      const SetupPage(),
-      const StudyPage(),
-      const LibraryPage(), // ✅ 新增：词库浏览/搜索
-      const StatsPage(),
-      const SettingsPage(),
+    final destinations = [
+      (
+        icon: Icons.home_outlined,
+        label: '初始化',
+        builder: const SetupPage(),
+      ),
+      (
+        icon: Icons.school_outlined,
+        label: '背单词',
+        builder: const StudyPage(),
+      ),
+      (
+        icon: Icons.menu_book_outlined,
+        label: '词库',
+        builder: const LibraryPage(),
+      ),
+      (
+        icon: Icons.bar_chart_outlined,
+        label: '统计',
+        builder: const StatsPage(),
+      ),
+      (
+        icon: Icons.settings_outlined,
+        label: '设置',
+        builder: const SettingsPage(),
+      ),
     ];
 
     return AnimatedBuilder(
       animation: m,
       builder: (_, __) {
+        final page = destinations[idx];
+
         return Scaffold(
-          body: SafeArea(child: pages[idx]),
+          appBar: AppBar(
+            title: Text(page.label),
+            centerTitle: true,
+            scrolledUnderElevation: 0,
+          ),
+          body: SafeArea(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              child: KeyedSubtree(key: ValueKey(page.label), child: page.builder),
+            ),
+          ),
           bottomNavigationBar: NavigationBar(
             selectedIndex: idx,
             onDestinationSelected: (i) => setState(() => idx = i),
-            destinations: const [
-              NavigationDestination(icon: Icon(Icons.home), label: '初始化'),
-              NavigationDestination(icon: Icon(Icons.school), label: '背单词'),
-              NavigationDestination(icon: Icon(Icons.menu_book), label: '词库'), // ✅
-              NavigationDestination(icon: Icon(Icons.bar_chart), label: '统计'),
-              NavigationDestination(icon: Icon(Icons.settings), label: '设置'),
+            destinations: [
+              for (final d in destinations)
+                NavigationDestination(icon: Icon(d.icon), label: d.label),
             ],
           ),
         );

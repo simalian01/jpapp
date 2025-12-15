@@ -22,6 +22,10 @@ def looks_path(text: str) -> bool:
     return '/' in text or '\\' in text
 
 
+def looks_numeric(text: str) -> bool:
+    return bool(re.fullmatch(r'[\d\s\-+*/.,]+', text))
+
+
 def pick_level(cells):
     for c in cells:
         cc = c.strip().upper()
@@ -97,20 +101,26 @@ def main():
     conn.commit()
 
     with SRC.open(newline='', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        headers = next(reader)
+        reader = csv.DictReader(f)
         total = 0
         skipped = 0
         for row in reader:
             if not row:
                 continue
-            deck = normalise_cell(row[0]) or '未分类'
-            cells = [normalise_cell(c) for c in row[1:] if normalise_cell(c)]
+
+            deck = normalise_cell(row.get('sheet_name', '')) or '未分类'
+            # 跳过 header 行或异常行
+            if deck.lower() == 'sheet_name':
+                continue
+
+            raw_cells = [normalise_cell(v or '') for k, v in row.items() if k not in ('sheet_name', 'row_index')]
+            cells = [c for c in raw_cells if c]
             if not cells:
                 skipped += 1
                 continue
 
-            level = pick_level(cells)
+            level_candidates = [row.get(k, '') for k in row if '级' in k]
+            level = pick_level([c for c in level_candidates if c]) or pick_level(cells)
 
             term = ''
             reading = ''
@@ -129,21 +139,27 @@ def main():
                         image_paths.append(p)
                     continue
 
-                if not term and looks_japanese(c):
+                if not term and looks_japanese(c) and not looks_numeric(c):
                     term = c
                     continue
                 if not reading and looks_kana(c):
                     reading = c
                     continue
 
-                # 兜底：收集释义字段
-                if len(meaning_parts) < 3 and len(c) <= 200:
+                # 兜底：收集释义字段（排除纯数字/页码串）
+                if len(meaning_parts) < 3 and len(c) <= 200 and not looks_numeric(c):
                     meaning_parts.append(c)
 
-            if not term:
-                term = cells[0]
+            if not term and cells:
+                fallback = next((c for c in cells if not looks_numeric(c)), '')
+                term = fallback or cells[0]
+
+            if not term or looks_numeric(term):
+                skipped += 1
+                continue
+
             if not meaning_parts:
-                meaning_parts = [c for c in cells if c != term][:2]
+                meaning_parts = [c for c in cells if c not in (term, reading) and not looks_numeric(c)][:2]
 
             meaning = '\n'.join(dict.fromkeys([m for m in meaning_parts if m]))
 
