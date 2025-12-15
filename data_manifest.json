@@ -1,0 +1,93 @@
+{
+  "source_file": "文法词汇知识点索引4.2_win系统版.xlsb",
+  "generated_at": "2025-12-15T08:47:51.705638",
+  "format": {
+    "csv": "grammar_vocab_index_all_sheets.csv",
+    "jsonl": "grammar_vocab_index_all_sheets.jsonl",
+    "notes": "Both files contain all sheets merged. Columns include sheet_name and row_index."
+  },
+  "sheets": [
+    {
+      "sheet_name": "蓝宝书",
+      "rows": 1005,
+      "cols": 17
+    },
+    {
+      "sheet_name": "红宝书",
+      "rows": 10060,
+      "cols": 47
+    },
+    {
+      "sheet_name": "日语汉字",
+      "rows": 15671,
+      "cols": 31
+    },
+    {
+      "sheet_name": "考前对策",
+      "rows": 1028,
+      "cols": 11
+    },
+    {
+      "sheet_name": "新日本语教程",
+      "rows": 709,
+      "cols": 8
+    },
+    {
+      "sheet_name": "疑难辨析",
+      "rows": 314,
+      "cols": 16
+    },
+    {
+      "sheet_name": "词汇辨析",
+      "rows": 334,
+      "cols": 15
+    },
+    {
+      "sheet_name": "新完全掌握",
+      "rows": 381,
+      "cols": 11
+    },
+    {
+      "sheet_name": "どんな时どう使う",
+      "rows": 1028,
+      "cols": 8
+    },
+    {
+      "sheet_name": "顾明耀",
+      "rows": 285,
+      "cols": 10
+    },
+    {
+      "sheet_name": "皮细庚",
+      "rows": 351,
+      "cols": 10
+    },
+    {
+      "sheet_name": "日语语法新思维",
+      "rows": 582,
+      "cols": 6
+    },
+    {
+      "sheet_name": "《日本语句型辞典》",
+      "rows": 217,
+      "cols": 6
+    },
+    {
+      "sheet_name": "Sheet1",
+      "rows": 89,
+      "cols": 7
+    },
+    {
+      "sheet_name": "变形与活用",
+      "rows": 18,
+      "cols": 7
+    },
+    {
+      "sheet_name": "词典存放目录",
+      "rows": 1,
+      "cols": 8
+    }
+  ],
+  "total_rows": 32073,
+  "total_cols": 151
+}
