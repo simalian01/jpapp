@@ -234,156 +234,210 @@ class _LibraryPageState extends State<LibraryPage> {
           IconButton(
             tooltip: '重新打乱当前列表',
             onPressed: items.isEmpty ? null : _shuffleNow,
-            icon: const Icon(Icons.shuffle),
+            icon: const Icon(Icons.shuffle_rounded),
           ),
           IconButton(
             tooltip: '重新加载',
             onPressed: ready ? _reload : null,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: deck.isEmpty ? null : deck,
-                        decoration: const InputDecoration(labelText: '词库/书'),
-                        items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-                        onChanged: !ready
-                            ? null
-                            : (v) async {
-                                if (v == null) return;
-                                setState(() => deck = v);
-                                await _loadLevels(m.db!, deck);
-                                await _reload();
-                              },
-                      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFF7F4FF), Color(0xFFFDFDFF)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: CustomScrollView(
+          controller: _sc,
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                value: deck.isEmpty ? null : deck,
+                                decoration: const InputDecoration(labelText: '词库/书'),
+                                items: decks
+                                    .map((d) => DropdownMenuItem(
+                                          value: d,
+                                          child: Text(d, overflow: TextOverflow.ellipsis),
+                                        ))
+                                    .toList(),
+                                onChanged: !ready
+                                    ? null
+                                    : (v) async {
+                                        if (v == null) return;
+                                        setState(() => deck = v);
+                                        await _loadLevels(m.db!, deck);
+                                        await _reload();
+                                      },
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                value: level,
+                                decoration: const InputDecoration(labelText: '等级（可不筛）'),
+                                items: levels
+                                    .map((lv) => DropdownMenuItem(value: lv, child: Text(lv)))
+                                    .toList(),
+                                onChanged: !ready
+                                    ? null
+                                    : (v) async {
+                                        setState(() => level = v ?? '全部');
+                                        await _reload();
+                                      },
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<MemoryFilter>(
+                                value: memFilter,
+                                decoration: const InputDecoration(labelText: '记忆筛选'),
+                                items: MemoryFilter.values
+                                    .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                                    .toList(),
+                                onChanged: !ready
+                                    ? null
+                                    : (v) async {
+                                        setState(() => memFilter = v ?? memFilter);
+                                        await _reload();
+                                      },
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            IconButton.filledTonal(
+                              tooltip: '打乱（反复点击反复随机）',
+                              onPressed: items.isEmpty ? null : _shuffleNow,
+                              icon: const Icon(Icons.casino),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          enabled: ready,
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.search),
+                            hintText: '搜索（假名/汉字/关键词）',
+                          ),
+                          onChanged: (v) {
+                            _debounce?.cancel();
+                            _debounce = Timer(const Duration(milliseconds: 250), () async {
+                              setState(() => query = v);
+                              await _reload();
+                            });
+                          },
+                        ),
+                        if (!ready)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 8),
+                            child: Text('请先在【初始化】导入词库', style: TextStyle(color: Colors.redAccent)),
+                          ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: level,
-                        decoration: const InputDecoration(labelText: '等级（可不筛）'),
-                        items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
-                        onChanged: !ready
-                            ? null
-                            : (v) async {
-                                setState(() => level = v ?? '全部');
-                                await _reload();
-                              },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<MemoryFilter>(
-                        value: memFilter,
-                        decoration: const InputDecoration(labelText: '记忆筛选'),
-                        items: MemoryFilter.values
-                            .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
-                            .toList(),
-                        onChanged: !ready
-                            ? null
-                            : (v) async {
-                                setState(() => memFilter = v ?? memFilter);
-                                await _reload();
-                              },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: '打乱（反复点击反复随机）',
-                      onPressed: items.isEmpty ? null : _shuffleNow,
-                      icon: const Icon(Icons.casino),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  enabled: ready,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.search),
-                    hintText: '搜索（假名/汉字/关键词）',
                   ),
-                  onChanged: (v) {
-                    _debounce?.cancel();
-                    _debounce = Timer(const Duration(milliseconds: 250), () async {
-                      setState(() => query = v);
-                      await _reload();
-                    });
-                  },
                 ),
-                if (!ready) const Padding(padding: EdgeInsets.only(top: 8), child: Text('请先在【初始化】导入词库')),
-              ],
+              ),
             ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: ListView.builder(
-              controller: _sc,
-              itemCount: items.length + 1,
-              itemBuilder: (_, i) {
-                if (i == items.length) {
-                  if (loading) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
+            SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) {
+                  if (i == items.length) {
+                    if (loading) {
+                      return const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+                    if (!hasMore) {
+                      return const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Center(child: Text('没有更多了')),
+                      );
+                    }
+                    return const SizedBox.shrink();
                   }
-                  if (!hasMore) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: Text('没有更多了')),
-                    );
-                  }
-                  return const SizedBox.shrink();
-                }
 
-                final row = items[i];
-                final id = (row['id'] as num).toInt();
-                final term = (row['term'] as String?) ?? '';
-                final reading = (row['reading'] as String?) ?? '';
-                final memTag = (row['mem_tag'] as num?)?.toInt() ?? 0;
+                  final row = items[i];
+                  final id = (row['id'] as num).toInt();
+                  final term = (row['term'] as String?) ?? '';
+                  final reading = (row['reading'] as String?) ?? '';
+                  final levelLabel = (row['level'] as String?) ?? '';
+                  final memTag = (row['mem_tag'] as num?)?.toInt() ?? 0;
 
-                final label = switch (memTag) {
-                  0 => '新词',
-                  1 => '待复习',
-                  3 => '已掌握',
-                  _ => '已学习',
-                };
+                  final label = switch (memTag) {
+                    0 => '新词',
+                    1 => '待复习',
+                    3 => '已掌握',
+                    _ => '已学习',
+                  };
 
-                return ListTile(
-                  title: Text(term),
-                  subtitle: Text(reading.isEmpty ? label : '$reading · $label'),
-                  trailing: Chip(label: Text(label)),
-                  onTap: () async {
-                    final db = m.db;
-                    if (db == null) return;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    child: Card(
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        title: Text(term, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (reading.isNotEmpty) Text(reading),
+                            if (levelLabel.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text('等级：$levelLabel', style: const TextStyle(fontSize: 12)),
+                              ),
+                          ],
+                        ),
+                        trailing: Chip(
+                          label: Text(label),
+                          avatar: Icon(
+                            memTag == 0
+                                ? Icons.fiber_new_rounded
+                                : memTag == 3
+                                    ? Icons.workspace_premium
+                                    : Icons.refresh,
+                            size: 18,
+                          ),
+                        ),
+                        onTap: () async {
+                          final db = m.db;
+                          if (db == null) return;
 
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ItemDetailPage(db: db, itemId: id, baseDir: m.baseDir),
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ItemDetailPage(db: db, itemId: id, baseDir: m.baseDir),
+                            ),
+                          );
+
+                          await _reload();
+                        },
                       ),
-                    );
-
-                    await _reload();
-                  },
-                );
-              },
+                    ),
+                  );
+                },
+                childCount: items.length + 1,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

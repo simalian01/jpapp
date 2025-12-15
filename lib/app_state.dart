@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +11,7 @@ import 'db.dart';
 
 class PrefKeys {
   static const dbPath = 'content_db_path';
+  static const dbVersion = 'content_db_version';
   static const baseDir = 'media_base_dir';
 }
 
@@ -37,6 +39,8 @@ class AppModel extends ChangeNotifier {
       _dbPath = sp.getString(PrefKeys.dbPath);
       _baseDir = sp.getString(PrefKeys.baseDir) ?? _baseDir;
 
+      await _prepareBundledDbIfNeeded();
+
       if (_dbPath != null) {
         await openContentDb(_dbPath!);
       }
@@ -55,6 +59,48 @@ class AppModel extends ChangeNotifier {
       await sp.setString(PrefKeys.dbPath, _dbPath!);
     }
     await sp.setString(PrefKeys.baseDir, _baseDir);
+  }
+
+  /// 将内置词库拷贝到应用沙盒，避免手工导入
+  Future<void> _prepareBundledDbIfNeeded() async {
+    final sp = await SharedPreferences.getInstance();
+    final bundledVersion = await _loadBundledVersion();
+    final savedVersion = sp.getString(PrefKeys.dbVersion);
+
+    final docDir = await getApplicationDocumentsDirectory();
+    final destPath = '${docDir.path}/jp_study_content.sqlite';
+    final dest = File(destPath);
+
+    final wantsBundled = _dbPath == null || _dbPath == destPath;
+    final needsRefresh = bundledVersion != null && bundledVersion != savedVersion;
+
+    if (wantsBundled && (needsRefresh || !await dest.exists())) {
+      final data = await rootBundle.load('assets/jp_study_content.sqlite');
+      await dest.writeAsBytes(data.buffer.asUint8List(), flush: true);
+      _dbPath = destPath;
+      await sp.setString(PrefKeys.dbVersion, bundledVersion ?? '');
+      await savePrefs();
+      return;
+    }
+
+    if (_dbPath != null && await File(_dbPath!).exists()) {
+      return;
+    }
+
+    if (await dest.exists()) {
+      _dbPath = destPath;
+      await savePrefs();
+    }
+  }
+
+  Future<String?> _loadBundledVersion() async {
+    try {
+      final raw = await rootBundle.loadString('assets/db_version.txt');
+      final v = raw.trim();
+      return v.isEmpty ? null : v;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> requestAllFilesAccess() async {
