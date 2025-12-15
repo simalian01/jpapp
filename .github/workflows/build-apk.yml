@@ -10,6 +10,9 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Build bundled sqlite from CSV
+        run: python3 tooling/build_sqlite_from_csv.py
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -34,8 +37,9 @@ jobs:
       - name: Copy app sources into generated project
         run: |
           cp pubspec.yaml app/pubspec.yaml
-          mkdir -p app/lib
+          mkdir -p app/lib app/assets
           cp -r lib/* app/lib/
+          cp -r assets/* app/assets/
           # 覆盖 AndroidManifest（避免 package= 导致新 Gradle 报错）
           cp tooling/AndroidManifest.xml app/android/app/src/main/AndroidManifest.xml
 
