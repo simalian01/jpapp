@@ -1,0 +1,10 @@
+*.csv text diff=csv
+*.json text
+*.md text
+*.dart text eol=lf
+*.yaml text
+*.yml text
+*.sh text eol=lf
+*.sqlite binary
+*.db binary
+*.apk binary

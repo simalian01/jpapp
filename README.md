@@ -63,3 +63,9 @@ python tooling/build_sqlite_from_csv.py
 - `scripts/build_db.py` 从 Excel 生成 sqlite 的脚本
 - `data/` 数据文件（例如生成的 `grammar_vocab_index_all_sheets.csv`、`data_manifest.json`）
 
+---
+
+## 协作与合并
+- `.gitattributes` 已声明 CSV/JSON/Dart 等为文本文件、数据库/APK 视为二进制，避免 PR 中被识别为不可合并的二进制冲突。
+- 如遇到合并冲突，优先保留最新的 `data/grammar_vocab_index_all_sheets.csv` 与脚本输出，再重新执行 `python tooling/build_sqlite_from_csv.py` 生成 sqlite。
+
