@@ -202,7 +202,9 @@ class _LibraryPageState extends State<LibraryPage> {
     }
 
     final sql = '''
-      SELECT i.id, i.term, i.reading, i.level,
+      SELECT i.id, i.term, i.reading, i.level, i.meaning,
+             (SELECT COUNT(*) FROM media WHERE item_id=i.id AND type='audio') AS audio_count,
+             (SELECT COUNT(*) FROM media WHERE item_id=i.id AND type='image') AS image_count,
              COALESCE(s.reps,0) AS reps,
              COALESCE(s.interval_days,0) AS interval_days,
              COALESCE(s.due_day,0) AS due_day,
@@ -356,6 +358,15 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
             ),
             SliverList(
+              delegate: SliverChildListDelegate([
+                if (!loading && items.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(18),
+                    child: Text('未找到符合条件的条目，请调整筛选或关键字。'),
+                  ),
+              ]),
+            ),
+            SliverList(
               delegate: SliverChildBuilderDelegate(
                 (context, i) {
                   if (i == items.length) {
@@ -379,6 +390,9 @@ class _LibraryPageState extends State<LibraryPage> {
                   final term = (row['term'] as String?) ?? '';
                   final reading = (row['reading'] as String?) ?? '';
                   final levelLabel = (row['level'] as String?) ?? '';
+                  final meaning = (row['meaning'] as String?) ?? '';
+                  final audioCount = (row['audio_count'] as num?)?.toInt() ?? 0;
+                  final imageCount = (row['image_count'] as num?)?.toInt() ?? 0;
                   final memTag = (row['mem_tag'] as num?)?.toInt() ?? 0;
 
                   final label = switch (memTag) {
@@ -398,11 +412,37 @@ class _LibraryPageState extends State<LibraryPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             if (reading.isNotEmpty) Text(reading),
+                            if (meaning.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  meaning,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
                             if (levelLabel.isNotEmpty)
                               Padding(
                                 padding: const EdgeInsets.only(top: 4),
                                 child: Text('等级：$levelLabel', style: const TextStyle(fontSize: 12)),
                               ),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Wrap(
+                                spacing: 6,
+                                children: [
+                                  Chip(
+                                    label: Text('音频 $audioCount'),
+                                    avatar: const Icon(Icons.volume_up, size: 16),
+                                  ),
+                                  Chip(
+                                    label: Text('图片 $imageCount'),
+                                    avatar: const Icon(Icons.image, size: 16),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
                         trailing: Chip(

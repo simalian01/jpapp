@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 SRC = Path('data/grammar_vocab_index_all_sheets.csv')
 DEST = Path('assets/jp_study_content.sqlite')
@@ -114,6 +114,15 @@ def prepare_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def make_search_text(deck: str, level: str, term: str, reading: str, meaning: str) -> str:
+    parts = [deck, level, term, reading]
+    for seg in meaning.replace('\n', ' ').split(' '):
+        seg = seg.strip()
+        if seg:
+            parts.append(seg)
+    return ' '.join(parts).strip()
+
+
 def insert_row(
     conn: sqlite3.Connection,
     deck: str,
@@ -124,7 +133,7 @@ def insert_row(
     audio_paths,
     image_paths,
 ):
-    search_text = ' '.join([deck, level, term, reading, meaning]).strip()
+    search_text = make_search_text(deck, level, term, reading, meaning)
     cur = conn.cursor()
     cur.execute(
         'INSERT INTO items(deck, level, term, reading, meaning, search_text) VALUES(?,?,?,?,?,?)',
@@ -135,6 +144,13 @@ def insert_row(
         cur.execute('INSERT INTO media(item_id, type, path) VALUES(?,?,?)', (item_id, 'audio', p))
     for p in image_paths:
         cur.execute('INSERT INTO media(item_id, type, path) VALUES(?,?,?)', (item_id, 'image', p))
+
+
+def collect_quality_flags(term: str, reading: str, meaning: str) -> Tuple[bool, bool, bool]:
+    missing_term = not term.strip()
+    missing_reading = not reading.strip()
+    missing_meaning = not meaning.strip()
+    return missing_term, missing_reading, missing_meaning
 
 
 def main():
@@ -154,6 +170,9 @@ def main():
 
         total = 0
         skipped = 0
+        missing_term = 0
+        missing_reading = 0
+        missing_meaning = 0
 
         for row in reader:
             if not row:
@@ -250,7 +269,12 @@ def main():
 
             meaning = '\n'.join(dict.fromkeys([m for m in meaning_parts if m]))
 
-            insert_row(conn, deck, level, term, reading, meaning, audio_paths, image_paths)
+            mt, mr, mm = collect_quality_flags(term, reading, meaning)
+            missing_term += int(mt)
+            missing_reading += int(mr)
+            missing_meaning += int(mm)
+
+            insert_row(conn, deck, level, term or '(未知)', reading, meaning, audio_paths, image_paths)
             total += 1
             if total % 5000 == 0:
                 conn.commit()
@@ -258,12 +282,19 @@ def main():
 
         conn.commit()
         print(f'Done. Inserted {total} rows, skipped {skipped}.')
+        print(
+            f'Quality summary -> missing term: {missing_term}, '
+            f'missing reading: {missing_reading}, missing meaning: {missing_meaning}'
+        )
 
     metadata = {
         'source': str(SRC),
         'rows': total,
         'generated_at': dt.datetime.utcnow().isoformat() + 'Z',
         'csv_sha256': hashlib.sha256(SRC.read_bytes()).hexdigest(),
+        'missing_term': missing_term,
+        'missing_reading': missing_reading,
+        'missing_meaning': missing_meaning,
     }
     VERSION_FILE.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
     print(f'Version info written to {VERSION_FILE}')

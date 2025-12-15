@@ -48,11 +48,55 @@ class SetupPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = appModelOf(context);
+    final snap = m.dbSnapshot;
+    final meta = m.bundledMeta;
 
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
         const Text('初始化（开箱即用）', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('数据状态', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    Chip(label: Text('词库：${snap?.deckCount ?? '-'} 本')),
+                    Chip(label: Text('条目：${snap?.itemCount ?? '-'}')),
+                    Chip(label: Text('媒体：${snap?.mediaCount ?? '-'}')),
+                    Chip(label: Text('待复习：${snap?.dueCount ?? '-'}')),
+                    Chip(label: Text('新词：${snap?.newCount ?? '-'}')),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text('当前词库文件：${m.dbPath ?? "未就绪"}', style: const TextStyle(fontSize: 12)),
+                Text('媒体目录：${m.baseDir} ${m.baseDirExists ? '' : '（不存在或无权访问）'}',
+                    style: TextStyle(fontSize: 12, color: m.baseDirExists ? null : Colors.redAccent)),
+                if (meta != null) ...[
+                  const SizedBox(height: 6),
+                  Text('内置词库版本：${meta['generated_at'] ?? ''}', style: const TextStyle(fontSize: 12)),
+                  Text('行数：${meta['rows'] ?? ''}｜源：${meta['source'] ?? ''}',
+                      style: const TextStyle(fontSize: 12)),
+                ],
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: m.db == null ? null : m.refreshDbSnapshot,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重新统计'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(height: 8),
         Card(
           child: Padding(

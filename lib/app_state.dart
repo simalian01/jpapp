@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,12 +22,18 @@ class AppModel extends ChangeNotifier {
   String? _dbPath;
   String _baseDir = '/storage/emulated/0/にほんご';
 
+  Map<String, dynamic>? _bundledMeta;
+  DbSnapshot? _dbSnapshot;
+
   bool _loading = false;
   String? _error;
 
   Database? get db => _db;
   String? get dbPath => _dbPath;
   String get baseDir => _baseDir;
+  bool get baseDirExists => Directory(_baseDir).existsSync();
+  Map<String, dynamic>? get bundledMeta => _bundledMeta;
+  DbSnapshot? get dbSnapshot => _dbSnapshot;
   bool get loading => _loading;
   String? get error => _error;
 
@@ -97,7 +104,16 @@ class AppModel extends ChangeNotifier {
     try {
       final raw = await rootBundle.loadString('assets/db_version.txt');
       final v = raw.trim();
-      return v.isEmpty ? null : v;
+      if (v.isEmpty) return null;
+      try {
+        final parsed = json.decode(v);
+        if (parsed is Map<String, dynamic>) {
+          _bundledMeta = parsed;
+        }
+      } catch (_) {
+        _bundledMeta = null;
+      }
+      return v;
     } catch (_) {
       return null;
     }
@@ -118,6 +134,16 @@ class AppModel extends ChangeNotifier {
     _baseDir = dir.trim();
     await savePrefs();
     notifyListeners();
+  }
+
+  Future<void> _refreshSnapshot() async {
+    if (_db == null) return;
+    _dbSnapshot = await DbSnapshot.fetch(_db!);
+    notifyListeners();
+  }
+
+  Future<void> refreshDbSnapshot() async {
+    await _refreshSnapshot();
   }
 
   /// 导入 sqlite：将外部文件复制到 App 文档目录并打开
@@ -154,7 +180,8 @@ class AppModel extends ChangeNotifier {
     await ensureUserTables(_db!);
     final ok = await contentSchemaLooksValid(_db!);
     if (ok) {
-    await ensureContentIndexes(_db!); // ✅ 新增：补建内容索引，解决“新词很慢”
+      await ensureContentIndexes(_db!); // ✅ 补建内容索引，解决“新词很慢”
+      await _refreshSnapshot();
     }
     if (!ok) {
       _error = '数据库结构不正确：需要 items/media 表。建议用 scripts/build_db.py 从 Excel 生成。';
@@ -209,3 +236,43 @@ class _AppRootState extends State<AppRoot> {
 
 /// 兼容你其他页面的调用方式
 AppModel appModelOf(BuildContext context) => AppScope.of(context);
+
+class DbSnapshot {
+  final int deckCount;
+  final int itemCount;
+  final int mediaCount;
+  final int dueCount;
+  final int newCount;
+
+  const DbSnapshot({
+    required this.deckCount,
+    required this.itemCount,
+    required this.mediaCount,
+    required this.dueCount,
+    required this.newCount,
+  });
+
+  static Future<DbSnapshot> fetch(Database db) async {
+    final today = epochDay(DateTime.now());
+
+    final meta = await db.rawQuery('''
+      SELECT COUNT(*) AS item_count, COUNT(DISTINCT deck) AS deck_count FROM items;
+    ''');
+    final media = await db.rawQuery('SELECT COUNT(*) AS media_count FROM media;');
+    final due = await db.rawQuery('SELECT COUNT(*) AS due_count FROM srs WHERE due_day <= ?', [today]);
+    final newOnes = await db.rawQuery('''
+      SELECT COUNT(*) AS new_count
+      FROM items i
+      LEFT JOIN srs s ON s.item_id=i.id
+      WHERE s.item_id IS NULL;
+    ''');
+
+    return DbSnapshot(
+      deckCount: (meta.first['deck_count'] as num?)?.toInt() ?? 0,
+      itemCount: (meta.first['item_count'] as num?)?.toInt() ?? 0,
+      mediaCount: (media.first['media_count'] as num?)?.toInt() ?? 0,
+      dueCount: (due.first['due_count'] as num?)?.toInt() ?? 0,
+      newCount: (newOnes.first['new_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}

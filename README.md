@@ -30,7 +30,6 @@ python tooling/build_sqlite_from_csv.py
 
 脚本会将 sqlite 写入 `assets/jp_study_content.sqlite`，并生成 `assets/db_version.txt`（包含 CSV 的 hash/行数）。
 应用启动时会对比该版本号，自动刷新内置词库到沙盒，避免升级后仍使用旧数据。
-应用启动时会对比该版本号自动刷新内置词库到沙盒，避免升级后仍使用旧数据。
 
 ---
 
@@ -73,12 +72,4 @@ python tooling/build_sqlite_from_csv.py
   1. 先正常解决 Dart/README/配置等文本冲突；`data/grammar_vocab_index_all_sheets.csv` 可视实际选择较新的版本或人工合并。
   2. 运行 `python tooling/build_sqlite_from_csv.py` 重新生成 sqlite 与版本文件，再 `git add .`。
   3. `git rebase --continue` 或 `git merge --continue` 完成合并。
-- `.gitattributes` 已声明 CSV/JSON/Dart 等为文本文件、数据库/APK 视为二进制，并对核心工程与生成物设定了固定策略：
-  - `assets/jp_study_content.sqlite`、`assets/db_version.txt`、主要页面（如 `lib/main.dart`、`lib/pages/*`）、`pubspec.yaml`、`README.md` 等在合并时默认保留当前分支，避免网页端提示“必须先解决冲突”。
-  - 若需吸收对方的实现，可在本地拉取后对相关文件 cherry-pick 或手工合并，再重新生成词库资产。
-- 遇到冲突时建议流程：
-  1. `git checkout --ours assets/jp_study_content.sqlite assets/db_version.txt`（保留当前分支的生成产物）
-  2. 解决其余文本冲突（如 README、Dart 代码），确保 `data/grammar_vocab_index_all_sheets.csv` 选取最新版本。
-  3. 运行 `python tooling/build_sqlite_from_csv.py` 重新生成 sqlite + 版本文件，再 `git add .`。
-  4. `git rebase --continue` 或 `git merge --continue` 完成合并。
 

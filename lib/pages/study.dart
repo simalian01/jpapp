@@ -443,61 +443,72 @@ class _StudySessionPageState extends State<StudySessionPage> {
     final it = item;
     if (it == null) return;
     final id = (it['id'] as num).toInt();
+    final deck = (it['deck'] as String?) ?? widget.deck;
+    final level = (it['level'] as String?) ?? widget.level;
 
     final today = epochDay(DateTime.now());
 
-    // 读现有 srs
-    double ease = (srs?['ease'] as num?)?.toDouble() ?? 2.5;
-    int reps = (srs?['reps'] as num?)?.toInt() ?? 0;
-    int interval = (srs?['interval_days'] as num?)?.toInt() ?? 0;
+    final ease = (srs?['ease'] as num?)?.toDouble() ?? 2.5;
+    final reps = (srs?['reps'] as num?)?.toInt() ?? 0;
+    final interval = (srs?['interval_days'] as num?)?.toInt() ?? 0;
+    final lapses = (srs?['lapses'] as num?)?.toInt() ?? 0;
 
-    // 简化 SM-2（足够成熟、稳定）
-    switch (r) {
-      case Rating.again:
-        ease = max(1.3, ease - 0.2);
-        reps = 0;
-        interval = 1;
-        break;
-      case Rating.hard:
-        ease = max(1.3, ease - 0.05);
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * 1.2).round()));
-        break;
-      case Rating.good:
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * ease).round()));
-        break;
-      case Rating.easy:
-        ease = min(3.0, ease + 0.05);
-        reps += 1;
-        interval = max(2, (interval == 0 ? 2 : (interval * ease * 1.3).round()));
-        break;
-    }
+    final grade = switch (r) {
+      Rating.again => 1,
+      Rating.hard => 2,
+      Rating.good => 3,
+      Rating.easy => 4,
+    };
 
-    final due = today + interval;
+    final next = sm2Update(
+      today: today,
+      ease: ease,
+      intervalDays: interval,
+      reps: reps,
+      lapses: lapses,
+      grade: grade,
+    );
 
     await widget.db.transaction((txn) async {
       await txn.execute("""
-        INSERT INTO srs(item_id, reps, interval_days, due_day, ease, last_day)
-        VALUES(?,?,?,?,?,?)
+        INSERT INTO srs(item_id, deck, level, state, ease, interval_days, due_day, reps, lapses, last_review_day)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(item_id) DO UPDATE SET
+          deck=excluded.deck,
+          level=excluded.level,
+          state=excluded.state,
           reps=excluded.reps,
           interval_days=excluded.interval_days,
           due_day=excluded.due_day,
           ease=excluded.ease,
-          last_day=excluded.last_day;
-      """, [id, reps, interval, due, ease, today]);
+          lapses=excluded.lapses,
+          last_review_day=excluded.last_review_day;
+      """, [
+        id,
+        deck,
+        level,
+        next.state,
+        next.ease,
+        next.intervalDays,
+        next.dueDay,
+        next.reps,
+        next.lapses,
+        today,
+      ]);
 
       await txn.execute("""
-        INSERT INTO reviews(day, item_id, rating)
-        VALUES(?,?,?);
-      """, [today, id, r.label]);
+        INSERT INTO review_log(day, item_id, grade, ts)
+        VALUES(?,?,?,?)
+      """, [today, id, grade, unixSeconds()]);
     });
 
     // 下一题
     if (idx + 1 >= ids.length) {
       if (mounted) {
         Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('本轮已完成，稍后可在统计查看复习记录')),
+        );
       }
       return;
     }
