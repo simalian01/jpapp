@@ -33,3 +33,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/jp_study_content.sqlite
+    - assets/db_version.txt
