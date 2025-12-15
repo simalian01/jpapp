@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../app_state.dart';
@@ -19,23 +17,6 @@ extension StudyModeLabel on StudyMode {
         return '只学新词';
       case StudyMode.dueOnly:
         return '只复习到期';
-    }
-  }
-}
-
-enum Rating { again, hard, good, easy }
-
-extension RatingLabel on Rating {
-  String get label {
-    switch (this) {
-      case Rating.again:
-        return 'Again';
-      case Rating.hard:
-        return 'Hard';
-      case Rating.good:
-        return 'Good';
-      case Rating.easy:
-        return 'Easy';
     }
   }
 }
@@ -84,6 +65,7 @@ class _StudyPageState extends State<StudyPage> {
       final deckRows = await db.rawQuery("""
         SELECT DISTINCT deck
         FROM items
+        WHERE deck IN ('红宝书','蓝宝书')
         ORDER BY deck;
       """);
 
@@ -260,14 +242,8 @@ class _StudySessionPageState extends State<StudySessionPage> {
 
   Map<String, Object?>? item;
   Map<String, Object?>? srs;
-  String? audioPath;
-  String? imagePath;
-  bool audioExists = false;
-  bool imageExists = false;
-
   bool showAnswer = false;
-
-  final player = AudioPlayer();
+  bool autoAdvance = true;
 
   @override
   void initState() {
@@ -277,20 +253,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
 
   @override
   void dispose() {
-    player.dispose();
     super.dispose();
-  }
-
-  String _resolveMediaPath(String raw) {
-    final p = raw.replaceAll('\\', '/');
-    const marker = '/にほんご/';
-    final i = p.indexOf(marker);
-    if (i >= 0) {
-      final rel = p.substring(i + marker.length);
-      return '${widget.baseDir}/$rel';
-    }
-    final p2 = p.replaceFirst(RegExp(r'^[A-Za-z]:/'), '');
-    return '${widget.baseDir}/${p2.replaceFirst(RegExp(r'^/+'), '')}';
   }
 
   Future<void> _loadSession() async {
@@ -401,16 +364,6 @@ class _StudySessionPageState extends State<StudySessionPage> {
 
       final sr = await widget.db.query('srs', where: 'item_id=?', whereArgs: [id], limit: 1);
       srs = sr.isEmpty ? null : sr.first;
-
-      final md = await widget.db.query('media', where: 'item_id=?', whereArgs: [id]);
-      final a = md.where((e) => e['type'] == 'audio').toList();
-      final img = md.where((e) => e['type'] == 'image').toList();
-
-      audioPath = a.isEmpty ? null : _resolveMediaPath((a.first['path'] as String).trim());
-      imagePath = img.isEmpty ? null : _resolveMediaPath((img.first['path'] as String).trim());
-
-      audioExists = audioPath != null && File(audioPath!).existsSync();
-      imageExists = imagePath != null && File(imagePath!).existsSync();
     } catch (e) {
       err = '$e';
     } finally {
@@ -418,73 +371,55 @@ class _StudySessionPageState extends State<StudySessionPage> {
     }
   }
 
-  Future<void> _play() async {
-    if (!audioExists || audioPath == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('音频不存在：${audioPath ?? "(空)"}')),
-      );
-      return;
-    }
-    await player.setFilePath(audioPath!);
-    await player.play();
-  }
-
-  Future<void> _rate(Rating r) async {
+  Future<void> _remember(bool know) async {
     final it = item;
     if (it == null) return;
     final id = (it['id'] as num).toInt();
 
     final today = epochDay(DateTime.now());
 
-    // 读现有 srs
     double ease = (srs?['ease'] as num?)?.toDouble() ?? 2.5;
     int reps = (srs?['reps'] as num?)?.toInt() ?? 0;
     int interval = (srs?['interval_days'] as num?)?.toInt() ?? 0;
+    int lapses = (srs?['lapses'] as num?)?.toInt() ?? 0;
 
-    // 简化 SM-2（足够成熟、稳定）
-    switch (r) {
-      case Rating.again:
-        ease = max(1.3, ease - 0.2);
-        reps = 0;
-        interval = 1;
-        break;
-      case Rating.hard:
-        ease = max(1.3, ease - 0.05);
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * 1.2).round()));
-        break;
-      case Rating.good:
-        reps += 1;
-        interval = max(1, (interval == 0 ? 1 : (interval * ease).round()));
-        break;
-      case Rating.easy:
-        ease = min(3.0, ease + 0.05);
-        reps += 1;
-        interval = max(2, (interval == 0 ? 2 : (interval * ease * 1.3).round()));
-        break;
+    final upd = sm2Update(
+      today: today,
+      ease: ease,
+      intervalDays: interval,
+      reps: reps,
+      lapses: lapses,
+      grade: know ? 4 : 1,
+    );
+
+    final storedReps = know ? upd.reps : -1;
+
+    await widget.db.insert(
+      'srs',
+      {
+        'item_id': id,
+        'deck': widget.deck,
+        'level': widget.level == '全部' ? null : widget.level,
+        'ease': upd.ease,
+        'interval_days': upd.intervalDays,
+        'reps': storedReps,
+        'lapses': upd.lapses,
+        'due_day': upd.dueDay,
+        'state': upd.state,
+        'last_review_day': today,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+
+    if (autoAdvance) {
+      await _goNext();
+    } else if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已标记为${know ? '记得' : '不记得'}，手动点下一条继续')));
     }
+  }
 
-    final due = today + interval;
-
-    await widget.db.transaction((txn) async {
-      await txn.execute("""
-        INSERT INTO srs(item_id, reps, interval_days, due_day, ease, last_day)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(item_id) DO UPDATE SET
-          reps=excluded.reps,
-          interval_days=excluded.interval_days,
-          due_day=excluded.due_day,
-          ease=excluded.ease,
-          last_day=excluded.last_day;
-      """, [id, reps, interval, due, ease, today]);
-
-      await txn.execute("""
-        INSERT INTO reviews(day, item_id, rating)
-        VALUES(?,?,?);
-      """, [today, id, r.label]);
-    });
-
-    // 下一题
+  Future<void> _goNext() async {
     if (idx + 1 >= ids.length) {
       if (mounted) {
         Navigator.pop(context);
@@ -509,6 +444,11 @@ class _StudySessionPageState extends State<StudySessionPage> {
             onPressed: () => setState(() => showAnswer = !showAnswer),
             icon: Icon(showAnswer ? Icons.visibility_off : Icons.visibility),
           ),
+          IconButton(
+            tooltip: autoAdvance ? '关闭自动下一题' : '开启自动下一题',
+            onPressed: () => setState(() => autoAdvance = !autoAdvance),
+            icon: Icon(autoAdvance ? Icons.fast_forward : Icons.pause_circle_outline),
+          ),
         ],
       ),
       body: loading
@@ -529,93 +469,51 @@ class _StudySessionPageState extends State<StudySessionPage> {
                               style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
                             ),
                             const SizedBox(height: 8),
-                            Text('かな：${(it?['reading'] as String?) ?? ''}'),
-                            Text('等级：${(it?['level'] as String?) ?? ''}'),
+                            if (((it?['reading'] as String?) ?? '').isNotEmpty)
+                              Text('かな：${(it?['reading'] as String?) ?? ''}'),
+                            if (((it?['level'] as String?) ?? '').isNotEmpty)
+                              Text('等级：${(it?['level'] as String?) ?? ''}'),
                             const SizedBox(height: 10),
                             if (!showAnswer)
-                              const Text('点击右上角 👁 显示答案/释义（如果词库有）', style: TextStyle(fontSize: 12))
+                              const Text('点击右上角 👁 显示释义，默认隐藏图片/音频，专注判断是否记得',
+                                  style: TextStyle(fontSize: 12))
                             else
                               Text('释义：${(it?['meaning'] as String?) ?? ''}'),
                           ],
                         ),
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: _play,
-                          icon: const Icon(Icons.volume_up),
-                          label: Text(audioExists ? '播放音频' : '音频缺失'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            if (!imageExists || imagePath == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('图片不存在：${imagePath ?? "(空)"}')),
-                              );
-                              return;
-                            }
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(builder: (_) => _ImageViewer(path: imagePath!)),
-                            );
-                          },
-                          icon: const Icon(Icons.image),
-                          label: Text(imageExists ? '查看图片' : '图片缺失'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    if (imageExists && imagePath != null)
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(10),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.file(File(imagePath!), fit: BoxFit.contain),
-                          ),
-                        ),
-                      ),
                     const SizedBox(height: 14),
-                    const Text('评分', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Text('记忆标记', style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
-                          child: OutlinedButton(onPressed: () => _rate(Rating.again), child: const Text('Again')),
+                          child: OutlinedButton(
+                            onPressed: () => _remember(false),
+                            child: const Text('不记得'),
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: OutlinedButton(onPressed: () => _rate(Rating.hard), child: const Text('Hard')),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton(onPressed: () => _rate(Rating.good), child: const Text('Good')),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton(onPressed: () => _rate(Rating.easy), child: const Text('Easy')),
+                          child: FilledButton(
+                            onPressed: () => _remember(true),
+                            child: const Text('记得'),
+                          ),
                         ),
                       ],
                     ),
+                    if (!autoAdvance)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: OutlinedButton.icon(
+                          onPressed: _goNext,
+                          icon: const Icon(Icons.navigate_next),
+                          label: const Text('下一条'),
+                        ),
+                      ),
                   ],
                 ),
-    );
-  }
-}
-
-class _ImageViewer extends StatelessWidget {
-  final String path;
-  const _ImageViewer({required this.path});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('图片')),
-      body: Center(child: InteractiveViewer(child: Image.file(File(path)))),
     );
   }
 }

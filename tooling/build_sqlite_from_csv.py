@@ -129,6 +129,11 @@ def collect_detail_fields(row: dict, *, max_items: int = 12) -> dict:
     return fields
 
 
+def allow_sheet(name: str) -> bool:
+    name = name.strip()
+    return name in {'红宝书', '蓝宝书'}
+
+
 def parse_red_book(row: dict) -> Optional[ParsedRow]:
     kana = normalise_cell(row.get('假名', ''))
     kanji = normalise_cell(row.get('汉字/外文', ''))
@@ -195,6 +200,8 @@ def main():
                 continue
 
             deck = normalise_cell(row.get('sheet_name', '')) or '未分类'
+            if not allow_sheet(deck):
+                continue
             # 跳过 header 行或异常行
             if deck.lower() == 'sheet_name':
                 continue
@@ -217,14 +224,14 @@ def main():
                     continue
 
             if parsed is None:
-                term = ''
-                reading = ''
-                meaning_parts = []
+                # 蓝宝书：兼容性解析，保留核心字段，避免引入其他 sheet 噪音
+                term = normalise_cell(row.get('单词', '')) or normalise_cell(row.get('词汇', ''))
+                reading = normalise_cell(row.get('假名', ''))
+                meaning = normalise_cell(row.get('释义', ''))
                 audio_paths = []
                 image_paths = []
 
                 for c in cells:
-                    lower = c.lower()
                     if looks_path(c):
                         p = norm_path(c)
                         ext = Path(p).suffix.lower()
@@ -234,29 +241,13 @@ def main():
                             image_paths.append(p)
                         continue
 
-                    if not term and looks_japanese(c) and not looks_numeric(c):
-                        term = c
-                        continue
-                    if not reading and looks_kana(c):
-                        reading = c
-                        continue
-
-                    # 兜底：收集释义字段（排除纯数字/页码串）
-                    if len(meaning_parts) < 3 and len(c) <= 200 and not looks_numeric(c):
-                        meaning_parts.append(c)
-
-                if not term and cells:
-                    fallback = next((c for c in cells if not looks_numeric(c)), '')
-                    term = fallback or cells[0]
+                if not term:
+                    candidate = next((c for c in cells if looks_japanese(c)), '')
+                    term = candidate or (cells[0] if cells else '')
 
                 if not term or looks_numeric(term):
                     skipped += 1
                     continue
-
-                if not meaning_parts:
-                    meaning_parts = [c for c in cells if c not in (term, reading) and not looks_numeric(c)][:2]
-
-                meaning = '\n'.join(dict.fromkeys([m for m in meaning_parts if m]))
 
                 parsed = ParsedRow(
                     term=term,

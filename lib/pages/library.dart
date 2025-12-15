@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -10,21 +9,19 @@ import 'package:sqflite/sqflite.dart';
 import '../app_state.dart';
 import '../db.dart';
 
-enum MemoryFilter { all, newOnly, dueOnly, learnedOnly, masteredOnly }
+enum MemoryFilter { all, remembered, forgotten, fresh }
 
 extension MemoryFilterLabel on MemoryFilter {
   String get label {
     switch (this) {
       case MemoryFilter.all:
         return '全部';
-      case MemoryFilter.newOnly:
-        return '新词';
-      case MemoryFilter.dueOnly:
-        return '待复习';
-      case MemoryFilter.learnedOnly:
-        return '已学习';
-      case MemoryFilter.masteredOnly:
-        return '已掌握';
+      case MemoryFilter.remembered:
+        return '记得';
+      case MemoryFilter.forgotten:
+        return '不记得';
+      case MemoryFilter.fresh:
+        return '未标记';
     }
   }
 }
@@ -52,21 +49,7 @@ class _LibraryPageState extends State<LibraryPage> {
   final ScrollController _sc = ScrollController();
   final List<Map<String, Object?>> items = [];
   bool loading = false;
-  bool hasMore = true;
-  int offset = 0;
-  static const pageSize = 60;
-
-  int _shuffleSeed = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _sc.addListener(() {
-      if (_sc.position.pixels >= _sc.position.maxScrollExtent - 200) {
-        _loadMore();
-      }
-    });
-  }
+  String? err;
 
   @override
   void didChangeDependencies() {
@@ -90,6 +73,7 @@ class _LibraryPageState extends State<LibraryPage> {
   Future<void> _loadMeta(Database db) async {
     final deckRows = await db.rawQuery("""
       SELECT DISTINCT deck FROM items
+      WHERE deck IN ('红宝书','蓝宝书')
       ORDER BY deck;
     """);
     decks = deckRows.map((e) => (e['deck'] as String).trim()).where((s) => s.isNotEmpty).toList();
@@ -117,43 +101,29 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<void> _reload() async {
     setState(() {
-      items.clear();
-      offset = 0;
-      hasMore = true;
+      loading = true;
+      err = null;
     });
-    await _loadMore();
-  }
 
-  void _shuffleNow() {
-    setState(() {
-      _shuffleSeed++;
-      items.shuffle(Random(DateTime.now().millisecondsSinceEpoch ^ _shuffleSeed));
-    });
-  }
-
-  Future<void> _loadMore() async {
-    if (loading || !hasMore) return;
-
-    final m = appModelOf(context);
-    final db = m.db;
-    if (db == null) return;
-
-    setState(() => loading = true);
     try {
+      final m = appModelOf(context);
+      final db = m.db;
+      if (db == null) throw Exception('数据库未准备好');
+
       final rows = await _queryItems(
         db: db,
         deck: deck,
         level: level,
         q: query,
         mem: memFilter,
-        offset: offset,
-        limit: pageSize,
       );
       setState(() {
-        items.addAll(rows);
-        offset += rows.length;
-        hasMore = rows.length == pageSize;
+        items
+          ..clear()
+          ..addAll(rows);
       });
+    } catch (e) {
+      err = '$e';
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -165,10 +135,7 @@ class _LibraryPageState extends State<LibraryPage> {
     required String level,
     required String q,
     required MemoryFilter mem,
-    required int offset,
-    required int limit,
   }) async {
-    final today = epochDay(DateTime.now());
     final where = <String>['i.deck=?'];
     final args = <Object?>[deck];
 
@@ -177,50 +144,87 @@ class _LibraryPageState extends State<LibraryPage> {
       args.add(level);
     }
 
-    switch (mem) {
-      case MemoryFilter.all:
-        break;
-      case MemoryFilter.newOnly:
-        where.add('s.item_id IS NULL');
-        break;
-      case MemoryFilter.dueOnly:
-        where.add('s.item_id IS NOT NULL AND s.due_day <= ?');
-        args.add(today);
-        break;
-      case MemoryFilter.learnedOnly:
-        where.add('s.item_id IS NOT NULL');
-        break;
-      case MemoryFilter.masteredOnly:
-        where.add('s.item_id IS NOT NULL AND s.reps >= 4 AND s.interval_days >= 21 AND s.due_day > ?');
-        args.add(today);
-        break;
-    }
-
     final qq = q.trim();
     if (qq.isNotEmpty) {
       where.add('i.search_text LIKE ?');
       args.add('%$qq%');
     }
 
+    String memClause = '';
+    switch (mem) {
+      case MemoryFilter.all:
+        break;
+      case MemoryFilter.remembered:
+        memClause = 'AND s.reps >= 1';
+        break;
+      case MemoryFilter.forgotten:
+        memClause = 'AND s.reps < 0';
+        break;
+      case MemoryFilter.fresh:
+        memClause = 'AND s.item_id IS NULL';
+        break;
+    }
+
     final sql = '''
       SELECT i.id, i.term, i.reading, i.level,
              COALESCE(s.reps,0) AS reps,
              COALESCE(s.interval_days,0) AS interval_days,
-             COALESCE(s.due_day,0) AS due_day,
-             CASE
-               WHEN s.item_id IS NULL THEN 0
-               WHEN s.due_day <= $today THEN 1
-               WHEN s.reps >= 4 AND s.interval_days >= 21 AND s.due_day > $today THEN 3
-               ELSE 2
-             END AS mem_tag
+             COALESCE(s.due_day,0) AS due_day
       FROM items i
       LEFT JOIN srs s ON s.item_id=i.id
-      WHERE ${where.join(' AND ')}
-      ORDER BY i.id DESC
-      LIMIT ? OFFSET ?;
+      WHERE ${where.join(' AND ')} $memClause
+      ORDER BY i.id DESC;
     ''';
 
-    return db.rawQuery(sql, [...args, limit, offset]);
+    return db.rawQuery(sql, args);
+  }
+
+  Future<void> _markMemory(int itemId, bool remember) async {
+    final m = appModelOf(context);
+    final db = m.db;
+    if (db == null) return;
+
+    final today = epochDay(DateTime.now());
+    final exist = await db.query('srs', where: 'item_id=?', whereArgs: [itemId]);
+    double ease = exist.isEmpty ? 2.5 : (exist.first['ease'] as num).toDouble();
+    int interval = exist.isEmpty ? 0 : (exist.first['interval_days'] as num).toInt();
+    int reps = exist.isEmpty ? 0 : (exist.first['reps'] as num).toInt();
+    int lapses = exist.isEmpty ? 0 : (exist.first['lapses'] as num).toInt();
+
+    final upd = sm2Update(
+      today: today,
+      ease: ease,
+      intervalDays: interval,
+      reps: reps,
+      lapses: lapses,
+      grade: remember ? 4 : 1,
+    );
+
+    final storedReps = remember ? upd.reps : -1;
+
+    await db.insert(
+      'srs',
+      {
+        'item_id': itemId,
+        'deck': deck,
+        'level': level == '全部' ? null : level,
+        'ease': upd.ease,
+        'interval_days': upd.intervalDays,
+        'reps': storedReps,
+        'lapses': upd.lapses,
+        'due_day': upd.dueDay,
+        'state': upd.state,
+        'last_review_day': today,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+
+    setState(() {
+      final idx = items.indexWhere((e) => (e['id'] as num).toInt() == itemId);
+      if (idx >= 0) {
+        items[idx]['reps'] = storedReps;
+      }
+    });
   }
 
   @override
@@ -229,203 +233,173 @@ class _LibraryPageState extends State<LibraryPage> {
     final ready = m.db != null && m.error == null;
 
     return Scaffold(
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('精炼词库', style: Theme.of(context).textTheme.titleLarge),
-                        const SizedBox(height: 4),
-                        Text(ready ? '共加载 ${items.length} 条（滚动加载更多）' : '请先在【初始化】导入词库'),
-                      ],
-                    ),
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: items.isEmpty ? null : _shuffleNow,
-                          icon: const Icon(Icons.shuffle),
-                          label: const Text('打乱'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: ready ? _reload : null,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('刷新'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      children: [
-                        Row(
+      body: ready
+          ? NestedScrollView(
+              controller: _sc,
+              headerSliverBuilder: (_, __) => [
+                SliverAppBar(
+                  floating: true,
+                  snap: true,
+                  pinned: false,
+                  expandedHeight: 260,
+                  title: const Text('记忆'),
+                  flexibleSpace: FlexibleSpaceBar(
+                    background: SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 60, 16, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: deck.isEmpty ? null : deck,
-                                decoration: const InputDecoration(labelText: '词库/书'),
-                                items: decks.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-                                onChanged: !ready
-                                    ? null
-                                    : (v) async {
-                                        if (v == null) return;
-                                        setState(() => deck = v);
-                                        await _loadLevels(m.db!, deck);
-                                        await _reload();
-                                      },
-                              ),
+                            Text('红/蓝双书全集，直出列表，滑动即可专注记忆',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: deck.isEmpty ? null : deck,
+                                    decoration: const InputDecoration(labelText: '词书'),
+                                    items: decks
+                                        .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                                        .toList(),
+                                    onChanged: (v) async {
+                                      if (v == null) return;
+                                      setState(() => deck = v);
+                                      await _loadLevels(m.db!, deck);
+                                      await _reload();
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: level,
+                                    decoration: const InputDecoration(labelText: '等级'),
+                                    items: levels
+                                        .map((lv) => DropdownMenuItem(value: lv, child: Text(lv)))
+                                        .toList(),
+                                    onChanged: (v) async {
+                                      setState(() => level = v ?? '全部');
+                                      await _reload();
+                                    },
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: level,
-                                decoration: const InputDecoration(labelText: '等级（可不筛）'),
-                                items: levels.map((lv) => DropdownMenuItem(value: lv, child: Text(lv))).toList(),
-                                onChanged: !ready
-                                    ? null
-                                    : (v) async {
-                                        setState(() => level = v ?? '全部');
-                                        await _reload();
-                                      },
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final mf in MemoryFilter.values)
-                                ChoiceChip(
-                                  label: Text(mf.label),
-                                  selected: memFilter == mf,
-                                  onSelected: !ready
-                                      ? null
-                                      : (_) async {
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              height: 42,
+                              child: ListView(
+                                scrollDirection: Axis.horizontal,
+                                children: [
+                                  for (final mf in MemoryFilter.values)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: ChoiceChip(
+                                        label: Text(mf.label),
+                                        selected: memFilter == mf,
+                                        onSelected: (_) async {
                                           setState(() => memFilter = mf);
                                           await _reload();
                                         },
-                                ),
-                            ],
-                          ),
+                                      ),
+                                    ),
+                                  OutlinedButton.icon(
+                                    onPressed: _reload,
+                                    icon: const Icon(Icons.refresh, size: 18),
+                                    label: const Text('重载'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              decoration: const InputDecoration(
+                                prefixIcon: Icon(Icons.search),
+                                hintText: '直接查找假名/汉字/释义',
+                              ),
+                              onChanged: (v) {
+                                _debounce?.cancel();
+                                _debounce = Timer(const Duration(milliseconds: 250), () async {
+                                  setState(() => query = v);
+                                  await _reload();
+                                });
+                              },
+                            ),
+                            const SizedBox(height: 6),
+                            Text('当前列表：${items.length} 条', style: const TextStyle(fontSize: 12)),
+                          ],
                         ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          enabled: ready,
-                          decoration: const InputDecoration(
-                            prefixIcon: Icon(Icons.search),
-                            hintText: '搜索（假名/汉字/关键词）',
-                          ),
-                          onChanged: (v) {
-                            _debounce?.cancel();
-                            _debounce = Timer(const Duration(milliseconds: 250), () async {
-                              setState(() => query = v);
-                              await _reload();
-                            });
-                          },
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ],
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              controller: _sc,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              itemCount: items.length + 1,
-              itemBuilder: (_, i) {
-                if (i == items.length) {
-                  if (loading) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  if (!hasMore) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: Text('没有更多了')),
-                    );
-                  }
-                  return const SizedBox.shrink();
-                }
-
-                final row = items[i];
-                final id = (row['id'] as num).toInt();
-                final term = (row['term'] as String?) ?? '';
-                final reading = (row['reading'] as String?) ?? '';
-                final memTag = (row['mem_tag'] as num?)?.toInt() ?? 0;
-
-                final label = switch (memTag) {
-                  0 => '新词',
-                  1 => '待复习',
-                  3 => '已掌握',
-                  _ => '已学习',
-                };
-
-                return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                  child: ListTile(
-                    title: Text(term, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 4,
+              body: RefreshIndicator(
+                onRefresh: _reload,
+                child: err != null
+                    ? ListView(
                         children: [
-                          if (reading.isNotEmpty)
-                            Chip(
-                              label: Text(reading),
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          Chip(
-                            label: Text(label),
-                            visualDensity: VisualDensity.compact,
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(err!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                           ),
                         ],
+                      )
+                    : ListView.builder(
+                        key: const PageStorageKey('memory-list'),
+                        padding: const EdgeInsets.only(bottom: 24),
+                        itemCount: items.length,
+                        itemBuilder: (_, i) {
+                          final row = items[i];
+                          final id = (row['id'] as num).toInt();
+                          final term = (row['term'] as String?) ?? '';
+                          final reading = (row['reading'] as String?) ?? '';
+                          final reps = (row['reps'] as num?)?.toInt() ?? 0;
+                          final remembered = reps > 0;
+
+                          return Card(
+                            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            child: ListTile(
+                              title: Text(term, style: const TextStyle(fontWeight: FontWeight.w700)),
+                              subtitle: reading.isNotEmpty
+                                  ? Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(reading, style: const TextStyle(fontSize: 13)),
+                                    )
+                                  : null,
+                              trailing: Wrap(
+                                spacing: 6,
+                                children: [
+                                  FilterChip(
+                                    label: const Text('记得'),
+                                    selected: remembered,
+                                    onSelected: (_) => _markMemory(id, true),
+                                  ),
+                                  FilterChip(
+                                    label: const Text('不记得'),
+                                    selected: !remembered && reps != 0,
+                                    onSelected: (_) => _markMemory(id, false),
+                                  ),
+                                ],
+                              ),
+                              onTap: () async {
+                                final db = m.db;
+                                if (db == null) return;
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => ItemDetailPage(db: db, itemId: id, baseDir: m.baseDir),
+                                  ),
+                                );
+                              },
+                            ),
+                          );
+                        },
                       ),
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () async {
-                      final db = m.db;
-                      if (db == null) return;
-
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ItemDetailPage(db: db, itemId: id, baseDir: m.baseDir),
-                        ),
-                      );
-
-                      await _reload();
-                    },
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
+              ),
+            )
+          : const Center(child: CircularProgressIndicator()),
     );
   }
 }
