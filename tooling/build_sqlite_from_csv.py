@@ -1,7 +1,10 @@
 import csv
+import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 SRC = Path('data/grammar_vocab_index_all_sheets.csv')
 DEST = Path('assets/jp_study_content.sqlite')
@@ -45,6 +48,9 @@ def norm_path(p: str) -> str:
 
 def prepare_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.executescript(
@@ -57,6 +63,8 @@ def prepare_db(path: Path) -> sqlite3.Connection:
           term TEXT NOT NULL,
           reading TEXT,
           meaning TEXT,
+          sheet TEXT,
+          data_json TEXT,
           search_text TEXT
         );
         CREATE TABLE IF NOT EXISTS media(
@@ -76,18 +84,100 @@ def prepare_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def insert_row(conn: sqlite3.Connection, deck: str, level: str, term: str, reading: str, meaning: str, audio_paths, image_paths):
-    search_text = ' '.join([deck, level, term, reading, meaning]).strip()
+@dataclass
+class ParsedRow:
+    term: str
+    reading: str
+    level: str
+    meaning: str
+    audios: list[str]
+    images: list[str]
+    data_json: dict
+
+
+def insert_row(
+    conn: sqlite3.Connection,
+    *,
+    deck: str,
+    sheet: str,
+    parsed: ParsedRow,
+):
+    search_text = ' '.join([deck, parsed.level, parsed.term, parsed.reading, parsed.meaning]).strip()
     cur = conn.cursor()
     cur.execute(
-        'INSERT INTO items(deck, level, term, reading, meaning, search_text) VALUES(?,?,?,?,?,?)',
-        (deck, level, term, reading, meaning, search_text),
+        'INSERT INTO items(deck, level, term, reading, meaning, sheet, data_json, search_text) VALUES(?,?,?,?,?,?,?,?)',
+        (deck, parsed.level, parsed.term, parsed.reading, parsed.meaning, sheet, json.dumps(parsed.data_json, ensure_ascii=False), search_text),
     )
     item_id = cur.lastrowid
-    for p in audio_paths:
+    for p in parsed.audios:
         cur.execute('INSERT INTO media(item_id, type, path) VALUES(?,?,?)', (item_id, 'audio', p))
-    for p in image_paths:
+    for p in parsed.images:
         cur.execute('INSERT INTO media(item_id, type, path) VALUES(?,?,?)', (item_id, 'image', p))
+
+
+def collect_detail_fields(row: dict, *, max_items: int = 12) -> dict:
+    fields = {}
+    for k, v in row.items():
+        if k in ('sheet_name', 'row_index'):
+            continue
+        val = normalise_cell(v or '')
+        if not val or val in {'▶', '➸'}:
+            continue
+        fields[k] = val
+        if len(fields) >= max_items:
+            break
+    return fields
+
+
+def parse_red_book(row: dict) -> Optional[ParsedRow]:
+    kana = normalise_cell(row.get('假名', ''))
+    kanji = normalise_cell(row.get('汉字/外文', ''))
+    level = normalise_cell(row.get('col_40', '')) or pick_level([row.get('级', ''), row.get('等级', '')])
+
+    if not kana and not kanji:
+        return None
+    if not looks_japanese(kanji) and not looks_japanese(kana):
+        return None
+
+    audio_paths = []
+    audio = normalise_cell(row.get('音源路径', ''))
+    if audio:
+        audio_paths.append(norm_path(audio))
+    else:
+        joined = ''.join(normalise_cell(row.get(k, '')) for k in ('col_28', 'col_29', 'col_30')).strip()
+        if joined:
+            audio_paths.append(norm_path(joined))
+
+    image_paths = []
+    img = normalise_cell(row.get('图源_2', ''))
+    if not img:
+        img = (normalise_cell(row.get('col_25', '')) + normalise_cell(row.get('col_26', ''))).strip()
+    if img:
+        image_paths.append(norm_path(img))
+
+    term = kanji or kana
+    reading = kana
+    meaning = ''
+
+    data_json = {
+        '假名': kana,
+        '汉字/外文': kanji,
+        '等级': level,
+    }
+    if audio_paths:
+        data_json['音源路径'] = audio_paths[0]
+    if image_paths:
+        data_json['图源路径'] = image_paths[0]
+
+    return ParsedRow(
+        term=term or kana,
+        reading=reading,
+        level=level,
+        meaning=meaning,
+        audios=audio_paths,
+        images=image_paths,
+        data_json=data_json,
+    )
 
 
 def main():
@@ -95,10 +185,6 @@ def main():
         raise SystemExit(f'Missing source CSV: {SRC}')
 
     conn = prepare_db(DEST)
-    cur = conn.cursor()
-    cur.execute('DELETE FROM items;')
-    cur.execute('DELETE FROM media;')
-    conn.commit()
 
     with SRC.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -122,48 +208,67 @@ def main():
             level_candidates = [row.get(k, '') for k in row if '级' in k]
             level = pick_level([c for c in level_candidates if c]) or pick_level(cells)
 
-            term = ''
-            reading = ''
-            meaning_parts = []
-            audio_paths = []
-            image_paths = []
+            parsed = None
 
-            for c in cells:
-                lower = c.lower()
-                if looks_path(c):
-                    p = norm_path(c)
-                    ext = Path(p).suffix.lower()
-                    if ext in AUDIO_EXT:
-                        audio_paths.append(p)
-                    elif ext in IMAGE_EXT:
-                        image_paths.append(p)
+            if deck == '红宝书':
+                parsed = parse_red_book(row)
+                if parsed is None:
+                    skipped += 1
                     continue
 
-                if not term and looks_japanese(c) and not looks_numeric(c):
-                    term = c
+            if parsed is None:
+                term = ''
+                reading = ''
+                meaning_parts = []
+                audio_paths = []
+                image_paths = []
+
+                for c in cells:
+                    lower = c.lower()
+                    if looks_path(c):
+                        p = norm_path(c)
+                        ext = Path(p).suffix.lower()
+                        if ext in AUDIO_EXT:
+                            audio_paths.append(p)
+                        elif ext in IMAGE_EXT:
+                            image_paths.append(p)
+                        continue
+
+                    if not term and looks_japanese(c) and not looks_numeric(c):
+                        term = c
+                        continue
+                    if not reading and looks_kana(c):
+                        reading = c
+                        continue
+
+                    # 兜底：收集释义字段（排除纯数字/页码串）
+                    if len(meaning_parts) < 3 and len(c) <= 200 and not looks_numeric(c):
+                        meaning_parts.append(c)
+
+                if not term and cells:
+                    fallback = next((c for c in cells if not looks_numeric(c)), '')
+                    term = fallback or cells[0]
+
+                if not term or looks_numeric(term):
+                    skipped += 1
                     continue
-                if not reading and looks_kana(c):
-                    reading = c
-                    continue
 
-                # 兜底：收集释义字段（排除纯数字/页码串）
-                if len(meaning_parts) < 3 and len(c) <= 200 and not looks_numeric(c):
-                    meaning_parts.append(c)
+                if not meaning_parts:
+                    meaning_parts = [c for c in cells if c not in (term, reading) and not looks_numeric(c)][:2]
 
-            if not term and cells:
-                fallback = next((c for c in cells if not looks_numeric(c)), '')
-                term = fallback or cells[0]
+                meaning = '\n'.join(dict.fromkeys([m for m in meaning_parts if m]))
 
-            if not term or looks_numeric(term):
-                skipped += 1
-                continue
+                parsed = ParsedRow(
+                    term=term,
+                    reading=reading,
+                    level=level,
+                    meaning=meaning,
+                    audios=audio_paths,
+                    images=image_paths,
+                    data_json=collect_detail_fields(row),
+                )
 
-            if not meaning_parts:
-                meaning_parts = [c for c in cells if c not in (term, reading) and not looks_numeric(c)][:2]
-
-            meaning = '\n'.join(dict.fromkeys([m for m in meaning_parts if m]))
-
-            insert_row(conn, deck, level, term, reading, meaning, audio_paths, image_paths)
+            insert_row(conn, deck=deck, sheet=deck, parsed=parsed)
             total += 1
             if total % 5000 == 0:
                 conn.commit()

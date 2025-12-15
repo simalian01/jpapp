@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -450,6 +451,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   Map<String, Object?>? item;
   Map<String, Object?>? srs;
   List<Map<String, Object?>> media = [];
+  Map<String, String> dataFields = {};
 
   String? audioPath;
   String? imagePath;
@@ -458,6 +460,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
 
   bool loading = true;
   String? err;
+
+  Set<String>? _itemColumns;
 
   final player = AudioPlayer();
 
@@ -485,6 +489,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     return '${widget.baseDir}/${p2.replaceFirst(RegExp(r'^/+'), '')}';
   }
 
+  Future<Set<String>> _loadItemColumns() async {
+    if (_itemColumns != null) return _itemColumns!;
+    final rows = await widget.db.rawQuery("PRAGMA table_info(items);");
+    _itemColumns = rows.map((e) => (e['name'] as String?) ?? '').toSet();
+    return _itemColumns!;
+  }
+
   Future<void> _load() async {
     setState(() {
       loading = true;
@@ -492,13 +503,31 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     });
 
     try {
-      final it = await widget.db.query('items', where: 'id=?', whereArgs: [widget.itemId], limit: 1);
+      final columns = ['id', 'deck', 'term', 'reading', 'level', 'meaning'];
+      final cols = await _loadItemColumns();
+      if (cols.contains('sheet')) columns.add('sheet');
+      if (cols.contains('data_json')) columns.add('data_json');
+
+      final it = await widget.db.query('items', columns: columns, where: 'id=?', whereArgs: [widget.itemId], limit: 1);
       if (it.isEmpty) throw Exception('找不到条目');
       item = it.first;
 
       media = await widget.db.query('media', where: 'item_id=?', whereArgs: [widget.itemId]);
       final sr = await widget.db.query('srs', where: 'item_id=?', whereArgs: [widget.itemId], limit: 1);
       srs = sr.isEmpty ? null : sr.first;
+
+      dataFields = {};
+      final rawJson = (item?['data_json'] as String?) ?? '';
+      if (rawJson.isNotEmpty) {
+        try {
+          final obj = jsonDecode(rawJson);
+          if (obj is Map) {
+            dataFields = obj.map((k, v) => MapEntry('$k', '${v ?? ''}'));
+          }
+        } catch (_) {
+          // ignore parsing errors; fallback to empty map
+        }
+      }
 
       final a = media.where((e) => e['type'] == 'audio').toList();
       final img = media.where((e) => e['type'] == 'image').toList();
@@ -515,6 +544,56 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     }
   }
 
+  Map<String, String> _deckSpecificFields(String deck) {
+    if (dataFields.isEmpty) return {};
+    switch (deck) {
+      case '红宝书':
+        return {
+          if (dataFields['汉字/外文']?.trim().isNotEmpty == true) '汉字/外文': dataFields['汉字/外文']!,
+          if (dataFields['假名']?.trim().isNotEmpty == true) '假名': dataFields['假名']!,
+          if (dataFields['等级']?.trim().isNotEmpty == true) '等级': dataFields['等级']!,
+          if (dataFields['图源路径']?.trim().isNotEmpty == true) '图片路径': dataFields['图源路径']!,
+          if (dataFields['音源路径']?.trim().isNotEmpty == true) '音频路径': dataFields['音源路径']!,
+        };
+      case '日语汉字':
+        return {
+          if (dataFields['漢字']?.trim().isNotEmpty == true) '漢字': dataFields['漢字']!,
+          if (dataFields['音訓']?.trim().isNotEmpty == true) '音訓': dataFields['音訓']!,
+          if (dataFields['漢字表・例']?.trim().isNotEmpty == true) '例': dataFields['漢字表・例']!,
+        };
+      default:
+        return Map.of(dataFields);
+    }
+  }
+
+  Widget _buildInfoTable(Map<String, String> fields) {
+    if (fields.isEmpty) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('补充信息', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            ...fields.entries.map(
+              (e) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(width: 90, child: Text('${e.key}：', style: const TextStyle(color: Colors.grey))),
+                    Expanded(child: Text(e.value)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _playAudio() async {
     if (audioPath == null || !audioExists) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('音频不存在：${audioPath ?? "(空)"}')));
@@ -527,6 +606,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   @override
   Widget build(BuildContext context) {
     final it = item;
+    final meaningText = ((it?['meaning'] as String?) ?? '').trim();
+    final deckName = (item?['sheet'] as String?) ?? (item?['deck'] as String?) ?? '';
+    final infoTable = _buildInfoTable(_deckSpecificFields(deckName));
 
     return Scaffold(
       appBar: AppBar(
@@ -549,11 +631,28 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                             Text((it?['term'] as String?) ?? '',
                                 style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
-                            Text('かな：${(it?['reading'] as String?) ?? ''}'),
-                            const SizedBox(height: 6),
-                            Text('等级：${(it?['level'] as String?) ?? ''}'),
-                            const SizedBox(height: 6),
-                            Text('释义：${(it?['meaning'] as String?) ?? ''}'),
+                            if (((it?['reading'] as String?) ?? '').trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text('かな：${(it?['reading'] as String?) ?? ''}'),
+                              ),
+                            if (((it?['level'] as String?) ?? '').trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text('等级：${(it?['level'] as String?) ?? ''}'),
+                              ),
+                            if (meaningText.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('释义：'),
+                                    const SizedBox(height: 4),
+                                    ...meaningText.split('\n').map((line) => Text(line)).toList(),
+                                  ],
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -563,26 +662,23 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        FilledButton.icon(
-                          onPressed: _playAudio,
-                          icon: const Icon(Icons.volume_up),
-                          label: Text(audioExists ? '播放音频' : '音频缺失'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            if (imagePath == null || !imageExists) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text('图片不存在：${imagePath ?? "(空)"}')));
-                              return;
-                            }
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(builder: (_) => _ImageViewer(path: imagePath!)),
-                            );
-                          },
-                          icon: const Icon(Icons.image),
-                          label: Text(imageExists ? '查看图片' : '图片缺失'),
-                        ),
+                        if (audioExists)
+                          FilledButton.icon(
+                            onPressed: _playAudio,
+                            icon: const Icon(Icons.volume_up),
+                            label: const Text('播放音频'),
+                          ),
+                        if (imageExists)
+                          OutlinedButton.icon(
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => _ImageViewer(path: imagePath!)),
+                              );
+                            },
+                            icon: const Icon(Icons.image),
+                            label: const Text('查看图片'),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -596,6 +692,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                           ),
                         ),
                       ),
+                    const SizedBox(height: 8),
+                    infoTable,
                   ],
                 ),
     );
