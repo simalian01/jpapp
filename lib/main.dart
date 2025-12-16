@@ -4,7 +4,7 @@ import 'pages/home.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const JPStudyApp());
+  runApp(const AppRoot(child: JPStudyApp()));
 }
 
 class JPStudyApp extends StatelessWidget {
@@ -30,7 +30,7 @@ class JPStudyApp extends StatelessWidget {
               base.inputDecorationTheme.copyWith(border: const OutlineInputBorder()),
         );
       }(),
-      home: const AppRoot(child: HomeShell()),
+      home: const HomeShell(),
     );
   }
 }

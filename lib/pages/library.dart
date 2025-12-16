@@ -42,6 +42,7 @@ class _LibraryPageState extends State<LibraryPage> {
   String deck = '';
   String level = '全部';
   MemoryFilter memFilter = MemoryFilter.all;
+  bool shuffle = false;
 
   String query = '';
   Timer? _debounce;
@@ -116,6 +117,7 @@ class _LibraryPageState extends State<LibraryPage> {
         level: level,
         q: query,
         mem: memFilter,
+        shuffle: shuffle,
       );
       setState(() {
         items
@@ -135,6 +137,7 @@ class _LibraryPageState extends State<LibraryPage> {
     required String level,
     required String q,
     required MemoryFilter mem,
+    required bool shuffle,
   }) async {
     final where = <String>['i.deck=?'];
     final args = <Object?>[deck];
@@ -165,6 +168,7 @@ class _LibraryPageState extends State<LibraryPage> {
         break;
     }
 
+    final orderClause = shuffle ? 'ORDER BY RANDOM()' : 'ORDER BY i.id DESC';
     final sql = '''
       SELECT i.id, i.term, i.reading, i.level,
              COALESCE(s.reps,0) AS reps,
@@ -173,7 +177,7 @@ class _LibraryPageState extends State<LibraryPage> {
       FROM items i
       LEFT JOIN srs s ON s.item_id=i.id
       WHERE ${where.join(' AND ')} $memClause
-      ORDER BY i.id DESC;
+      $orderClause;
     ''';
 
     return db.rawQuery(sql, args);
@@ -319,14 +323,23 @@ class _LibraryPageState extends State<LibraryPage> {
                                         },
                                       ),
                                     ),
-                                  OutlinedButton.icon(
-                                    onPressed: _reload,
-                                    icon: const Icon(Icons.refresh, size: 18),
-                                    label: const Text('重载'),
-                                  ),
-                                ],
-                              ),
+                                OutlinedButton.icon(
+                                  onPressed: _reload,
+                                  icon: const Icon(Icons.refresh, size: 18),
+                                  label: const Text('重载'),
+                                ),
+                                const SizedBox(width: 8),
+                                FilterChip(
+                                  selected: shuffle,
+                                  label: const Text('打乱顺序'),
+                                  onSelected: (v) async {
+                                    setState(() => shuffle = v);
+                                    await _reload();
+                                  },
+                                ),
+                              ],
                             ),
+                          ),
                             const SizedBox(height: 10),
                             TextField(
                               decoration: const InputDecoration(

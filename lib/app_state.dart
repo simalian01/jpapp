@@ -186,8 +186,10 @@ class AppScope extends InheritedNotifier<AppModel> {
 
   static AppModel of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
-    assert(scope != null, 'AppScope not found');
-    return scope!.notifier!;
+    if (scope == null) {
+      throw FlutterError('AppScope not found. 请确认 AppRoot 包裹在 MaterialApp 之上');
+    }
+    return scope.notifier!;
   }
 }
 

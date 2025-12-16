@@ -123,16 +123,28 @@ class _StatsPageState extends State<StatsPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        Text('统计', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text('统计', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+            const Spacer(),
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          ],
+        ),
         Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Text('词库：${m.dbPath ?? "未导入"}'),
+          child: ListTile(
+            leading: const Icon(Icons.sd_storage_rounded),
+            title: const Text('当前词库'),
+            subtitle: Text(m.dbPath ?? '未导入'),
           ),
         ),
         const SizedBox(height: 8),
-        if (loading) const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+        if (loading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(),
+            ),
+          ),
         if (err != null)
           Card(
             child: Padding(
@@ -142,15 +154,10 @@ class _StatsPageState extends State<StatsPage> {
           ),
         if (!loading && err == null) ...[
           _buildTotalCard(),
-          const SizedBox(height: 8),
-          _buildLevelCard(),
-          const SizedBox(height: 8),
-          _buildUsageCard(),
           const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerRight,
-            child: FilledButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('刷新')),
-          ),
+          _buildLevelCard(),
+          const SizedBox(height: 12),
+          _buildUsageCard(),
         ],
       ],
     );
@@ -161,15 +168,31 @@ class _StatsPageState extends State<StatsPage> {
     final forgetRate = overall.total == 0 ? 0 : overall.forgotten / overall.total * 100;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('总览', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            Text('总词条：${overall.total}'),
-            Text('已标记记得：${overall.remembered}（${rememberRate.toStringAsFixed(1)}%）'),
-            Text('已标记不记得：${overall.forgotten}（${forgetRate.toStringAsFixed(1)}%）'),
+            Row(
+              children: [
+                const Icon(Icons.leaderboard_outlined, color: Colors.indigo),
+                const SizedBox(width: 6),
+                Text('总览', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _pill('总词条', overall.total.toString(), color: Colors.indigo),
+                _pill('记得', '${overall.remembered} / ${rememberRate.toStringAsFixed(1)}%', color: Colors.green),
+                _pill('不记得', '${overall.forgotten} / ${forgetRate.toStringAsFixed(1)}%', color: Colors.orange),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _bar(label: '记得占比', value: rememberRate / 100, color: Colors.green),
+            const SizedBox(height: 8),
+            _bar(label: '不记得占比', value: forgetRate / 100, color: Colors.orange),
           ],
         ),
       ),
@@ -177,27 +200,71 @@ class _StatsPageState extends State<StatsPage> {
   }
 
   Widget _buildLevelCard() {
+    final grouped = <String, List<DeckLevelStat>>{};
+    for (final s in levelStats) {
+      grouped.putIfAbsent(s.deck, () => []).add(s);
+    }
+
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('红宝书 / 蓝宝书分级统计', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ...levelStats.map(
-              (s) {
-                final rate = s.total == 0 ? 0 : s.remembered / s.total * 100;
-                final forgetRate = s.total == 0 ? 0 : s.forgotten / s.total * 100;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    children: [
-                      SizedBox(width: 70, child: Text(s.deck, style: const TextStyle(fontWeight: FontWeight.w600))),
-                      SizedBox(width: 80, child: Text(s.level, overflow: TextOverflow.ellipsis)),
-                      Expanded(child: Text('总 ${s.total}｜记得 ${s.remembered}（${rate.toStringAsFixed(1)}%）｜不记得 ${s.forgotten}（${forgetRate.toStringAsFixed(1)}%）')),
-                    ],
-                  ),
+            Row(
+              children: [
+                const Icon(Icons.menu_book_outlined, color: Colors.blueGrey),
+                const SizedBox(width: 6),
+                Text('红/蓝宝书分级', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ...grouped.entries.map(
+              (entry) {
+                final deckColor = entry.key == '红宝书' ? Colors.redAccent : Colors.lightBlue;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          Container(width: 12, height: 12, decoration: BoxDecoration(color: deckColor, shape: BoxShape.circle)),
+                          const SizedBox(width: 6),
+                          Text(entry.key, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        ],
+                      ),
+                    ),
+                    ...entry.value.map(
+                      (s) {
+                        final rate = s.total == 0 ? 0 : s.remembered / s.total * 100;
+                        final forgetRate = s.total == 0 ? 0 : s.forgotten / s.total * 100;
+                        return Container(
+                          margin: const EdgeInsets.symmetric(vertical: 4),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: deckColor.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(child: Text(s.level, style: const TextStyle(fontWeight: FontWeight.w600))),
+                                  Text('总 ${s.total}'),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              _bar(label: '记得 ${s.remembered}（${rate.toStringAsFixed(1)}%）', value: rate / 100, color: Colors.green),
+                              const SizedBox(height: 4),
+                              _bar(label: '不记得 ${s.forgotten}（${forgetRate.toStringAsFixed(1)}%）', value: forgetRate / 100, color: Colors.orange),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 );
               },
             ),
@@ -229,43 +296,96 @@ class _StatsPageState extends State<StatsPage> {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                const Text('使用统计', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Icon(Icons.insights_outlined, color: Colors.teal),
+                const SizedBox(width: 6),
+                Text('使用统计', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
                 const Spacer(),
                 TextButton.icon(
                   onPressed: () => setState(() => showUsageDetails = !showUsageDetails),
                   icon: Icon(showUsageDetails ? Icons.expand_less : Icons.expand_more),
-                  label: Text(showUsageDetails ? '收起每日明细' : '查看每日明细'),
+                  label: Text(showUsageDetails ? '收起明细' : '每日明细'),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            Text('累计使用时间：${hms(totalSeconds)}'),
-            Text('累计打开详情：$totalDetails 次'),
-            Text('累计标记记得：$totalRemember 次'),
-            Text('累计标记不记得：$totalForgotten 次'),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _pill('累计时长', hms(totalSeconds), color: Colors.teal),
+                _pill('详情次数', '$totalDetails 次', color: Colors.indigo),
+                _pill('记得', '$totalRemember 次', color: Colors.green),
+                _pill('不记得', '$totalForgotten 次', color: Colors.orange),
+              ],
+            ),
             if (showUsageDetails) ...[
+              const SizedBox(height: 12),
               const Divider(),
               ...usages.map(
-                (u) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    children: [
-                      SizedBox(width: 110, child: Text(formatDay(u.day))),
-                      Expanded(child: Text('${hms(u.seconds)}｜详情 ${u.detailOpens}｜记得 ${u.remembered}｜不记得 ${u.forgotten}')),
-                    ],
+                (u) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.teal.withOpacity(0.12),
+                    child: Text(u.day.toString().substring(u.day.toString().length - 2)),
                   ),
+                  title: Text(formatDay(u.day)),
+                  subtitle: Text('${hms(u.seconds)} · 详情 ${u.detailOpens} · 记得 ${u.remembered} · 不记得 ${u.forgotten}'),
                 ),
               ),
             ],
           ],
         ),
       ),
+    );
+  }
+
+  Widget _pill(String title, String value, {required Color color}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(title, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  Widget _bar({required String label, required double value, required Color color}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label)),
+            Text('${(value * 100).toStringAsFixed(1)}%'),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+            value: value.clamp(0.0, 1.0),
+            minHeight: 10,
+            backgroundColor: color.withOpacity(0.1),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      ],
     );
   }
 }
