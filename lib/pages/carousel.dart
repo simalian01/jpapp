@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -41,6 +42,7 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
   bool playing = false;
   int currentIndex = 0;
   bool _autoLooping = false;
+  bool _stopping = false;
   bool _announcedMissingAudio = false;
 
   final PageController _pc = PageController();
@@ -295,7 +297,7 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
     await _player.setClip(start: null, end: null);
   }
 
-  Future<void> _playCurrentAudio() async {
+  Future<void> _playCurrentAudio({bool auto = false}) async {
     if (playlist.isEmpty) return;
     final item = playlist[currentIndex];
     if (item.audioPath == null) {
@@ -306,11 +308,18 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
       return;
     }
     for (var i = 0; i < playTimes; i++) {
-      await _player.setFilePath(item.audioPath!);
+      if (auto && (!_autoLooping || _stopping)) return;
+      final duration = await _player.setFilePath(item.audioPath!);
       await _player.setVolume(gain);
       await _player.play();
-      await _player.processingStateStream
-          .firstWhere((s) => s == ProcessingState.completed || s == ProcessingState.idle);
+
+      if (duration != null) {
+        await _player.positionStream.firstWhere((p) => p >= duration, orElse: () => Duration.zero);
+      }
+      await _player.playerStateStream
+          .firstWhere((s) => s.processingState == ProcessingState.completed || s.processingState == ProcessingState.idle);
+
+      if (auto && (!_autoLooping || _stopping)) return;
       if (i < playTimes - 1) {
         await Future.delayed(Duration(milliseconds: (repeatGapSeconds * 1000).round()));
       }
@@ -334,7 +343,10 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
       setState(() {
         playing = false;
         _autoLooping = false;
+        _stopping = true;
       });
+      await _player.stop();
+      _stopping = false;
       return;
     }
     if (playlist.isEmpty) await _refreshPlaylist();
@@ -342,12 +354,12 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
 
     setState(() {
       playing = true;
-        _autoLooping = true;
-      });
+      _autoLooping = true;
+    });
 
     Future(() async {
       while (_autoLooping && mounted) {
-        await _playCurrentAudio();
+        await _playCurrentAudio(auto: true);
         if (!_autoLooping || !mounted) break;
         await Future.delayed(Duration(milliseconds: (wordGapSeconds * 1000).round()));
         if (!_autoLooping || !mounted) break;
@@ -386,6 +398,36 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     }
+  }
+
+  void _showItemMeta(_CarouselItem it) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(it.term, style: Theme.of(context).textTheme.titleLarge),
+            if (it.reading.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(it.reading, style: Theme.of(context).textTheme.titleMedium),
+              ),
+            if (it.meaning.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(it.meaning, style: Theme.of(context).textTheme.bodyLarge),
+              ),
+            const SizedBox(height: 12),
+            Text('词书：${deck ?? ''}  ·  级别：${level == '全部' ? '全部' : level}',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).hintColor)),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -569,6 +611,7 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
                           itemCount: playlist.length,
                           itemBuilder: (_, i) {
                             final it = playlist[i];
+                            final hasImage = it.imagePath != null && File(it.imagePath!).existsSync();
                             return Padding(
                               padding: const EdgeInsets.all(12),
                               child: DecoratedBox(
@@ -580,67 +623,125 @@ class _CarouselPlayerPageState extends State<CarouselPlayerPage> {
                                 child: Stack(
                                   children: [
                                     Positioned.fill(
-                                      child: it.imagePath != null
+                                      child: hasImage
                                           ? InteractiveViewer(
                                               child: Image.file(
                                                 File(it.imagePath!),
                                                 fit: BoxFit.contain,
                                               ),
                                             )
-                                          : Center(
-                                              child: Text(
-                                              '无图片，显示文本：\n${it.term}',
-                                              textAlign: TextAlign.center,
-                                              style: const TextStyle(fontSize: 22),
-                                            )),
+                                          : Container(
+                                              decoration: BoxDecoration(
+                                                gradient: LinearGradient(
+                                                  colors: [
+                                                    Theme.of(context).colorScheme.primaryContainer,
+                                                    Theme.of(context).colorScheme.secondaryContainer,
+                                                  ],
+                                                  begin: Alignment.topLeft,
+                                                  end: Alignment.bottomRight,
+                                                ),
+                                              ),
+                                              child: Center(
+                                                child: Column(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Text(it.term,
+                                                        textAlign: TextAlign.center,
+                                                        style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
+                                                    if (it.reading.isNotEmpty)
+                                                      Padding(
+                                                        padding: const EdgeInsets.only(top: 4),
+                                                        child:
+                                                            Text(it.reading, style: const TextStyle(fontSize: 20, color: Colors.black87)),
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
                                     ),
-                                    if (!immersiveImage)
+                                    if (!immersiveImage) ...[
+                                      Positioned(
+                                        top: 12,
+                                        left: 12,
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(14),
+                                          child: BackdropFilter(
+                                            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                              decoration: BoxDecoration(
+                                                color: Theme.of(context).colorScheme.surface.withOpacity(0.78),
+                                                borderRadius: BorderRadius.circular(14),
+                                                border: Border.all(color: Theme.of(context).dividerColor.withOpacity(0.5)),
+                                              ),
+                                              child: Wrap(
+                                                spacing: 8,
+                                                runSpacing: 6,
+                                                children: [
+                                                  Chip(
+                                                    avatar: const Icon(Icons.photo, size: 18),
+                                                    label: Text('第 ${i + 1}/${playlist.length} 条'),
+                                                  ),
+                                                  Chip(
+                                                    avatar: const Icon(Icons.layers, size: 18),
+                                                    label: Text(level == '全部' ? '全部级别' : '级别 $level'),
+                                                  ),
+                                                  if (!hasImage)
+                                                    const Chip(
+                                                      avatar: Icon(Icons.image_not_supported_outlined, size: 18),
+                                                      label: Text('无配图，已显示文本'),
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
                                       Positioned(
                                         left: 12,
                                         right: 12,
                                         bottom: 12,
-                                        child: DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            color: Theme.of(context).colorScheme.surface.withOpacity(0.8),
-                                            borderRadius: BorderRadius.circular(12),
-                                          ),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(10),
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text(it.term, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-                                                if (it.reading.isNotEmpty)
-                                                  Padding(
-                                                    padding: const EdgeInsets.only(top: 4),
-                                                    child: Text(it.reading, style: const TextStyle(fontSize: 18)),
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(14),
+                                          child: BackdropFilter(
+                                            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                              decoration: BoxDecoration(
+                                                color: Colors.black.withOpacity(0.25),
+                                                borderRadius: BorderRadius.circular(14),
+                                                border: Border.all(color: Colors.white24),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  IconButton(
+                                                    tooltip: '查看词条信息',
+                                                    icon: const Icon(Icons.info_outline),
+                                                    color: Colors.white,
+                                                    onPressed: () => _showItemMeta(it),
                                                   ),
-                                                if (it.meaning.isNotEmpty)
-                                                  Padding(
-                                                    padding: const EdgeInsets.only(top: 4),
-                                                    child: Text(it.meaning, style: const TextStyle(fontSize: 16, color: Colors.grey)),
-                                                  ),
-                                                const SizedBox(height: 8),
-                                                Row(
-                                                  children: [
-                                                    FilledButton.icon(
-                                                      onPressed: _playCurrentAudio,
+                                                  const SizedBox(width: 4),
+                                                  Expanded(
+                                                    child: FilledButton.icon(
+                                                      onPressed: playing ? null : () => _playCurrentAudio(),
                                                       icon: const Icon(Icons.volume_up),
-                                                      label: const Text('播放音频'),
+                                                      label: const Text('播放当前词音频'),
                                                     ),
-                                                    const SizedBox(width: 8),
-                                                    OutlinedButton.icon(
-                                                      onPressed: () => _setImmersive(true),
-                                                      icon: const Icon(Icons.fullscreen),
-                                                      label: const Text('横屏大图'),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ],
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  IconButton(
+                                                    tooltip: '横屏仅看大图',
+                                                    onPressed: () => _setImmersive(true),
+                                                    icon: const Icon(Icons.fullscreen),
+                                                    color: Colors.white,
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           ),
                                         ),
-                                      )
+                                      ),
+                                    ]
                                     else
                                       Positioned(
                                         top: 12,
