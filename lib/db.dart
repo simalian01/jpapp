@@ -40,6 +40,16 @@ Future<void> ensureUserTables(Database db) async {
       forgotten INTEGER NOT NULL DEFAULT 0       -- 标记“不记得”
     );
   ''');
+
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS ocr_cache(
+      item_id INTEGER PRIMARY KEY,
+      image_path TEXT,
+      raw_text TEXT,
+      sentences_json TEXT,
+      updated_at INTEGER
+    );
+  ''');
 }
 
 /// ✅ 内容索引：保证新词/搜索/筛选不卡（即使库里原本没建索引）

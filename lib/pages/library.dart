@@ -8,6 +8,9 @@ import 'package:sqflite/sqflite.dart';
 
 import '../app_state.dart';
 import '../db.dart';
+import '../genai_service.dart';
+import '../utils/media_path.dart';
+import 'carousel.dart';
 
 enum MemoryFilter { all, remembered, forgotten, fresh }
 
@@ -253,6 +256,20 @@ class _LibraryPageState extends State<LibraryPage> {
     final ready = m.db != null && m.error == null;
 
     return Scaffold(
+      floatingActionButton: ready
+          ? FloatingActionButton.extended(
+              icon: const Icon(Icons.slideshow),
+              label: const Text('轮换播放'),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CarouselPlayerPage(initialDeck: deck.isEmpty ? null : deck),
+                  ),
+                );
+              },
+            )
+          : null,
       body: ready
           ? NestedScrollView(
               controller: _sc,
@@ -455,6 +472,11 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   Map<String, Object?>? srs;
   List<Map<String, Object?>> media = [];
   Map<String, String> dataFields = {};
+  OcrResult? ocrResult;
+
+  bool extractingOcr = false;
+  bool ocrCached = false;
+  bool _autoOcrStarted = false;
 
   String? audioPath;
   String? imagePath;
@@ -482,23 +504,88 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     super.dispose();
   }
 
-  String resolveMediaPath(String raw) {
-    final p = raw.replaceAll('\\', '/');
-    const marker = '/にほんご/';
-    final i = p.indexOf(marker);
-    if (i >= 0) {
-      final rel = p.substring(i + marker.length);
-      return '${widget.baseDir}/$rel';
-    }
-    final p2 = p.replaceFirst(RegExp(r'^[A-Za-z]:/'), '');
-    return '${widget.baseDir}/${p2.replaceFirst(RegExp(r'^/+'), '')}';
-  }
-
   Future<Set<String>> _loadItemColumns() async {
     if (_itemColumns != null) return _itemColumns!;
     final rows = await widget.db.rawQuery("PRAGMA table_info(items);");
     _itemColumns = rows.map((e) => (e['name'] as String?) ?? '').toSet();
     return _itemColumns!;
+  }
+
+  Future<void> _loadOcrCache() async {
+    final rows = await widget.db.query('ocr_cache', where: 'item_id=?', whereArgs: [widget.itemId], limit: 1);
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final cachedPath = row['image_path'] as String?;
+    if (cachedPath != null && imagePath != null && cachedPath != imagePath) return;
+
+    final raw = (row['raw_text'] as String?) ?? '';
+    final jsonStr = (row['sentences_json'] as String?) ?? '[]';
+    List<FuriganaSentence> sentences = [];
+    try {
+      final decoded = jsonDecode(jsonStr) as List<dynamic>;
+      sentences = decoded
+          .whereType<Map<String, dynamic>>()
+          .map(FuriganaSentence.fromMap)
+          .toList();
+    } catch (_) {}
+
+    setState(() {
+      ocrResult = OcrResult(rawText: raw, sentences: sentences);
+      ocrCached = true;
+    });
+  }
+
+  Future<void> _persistOcrCache(OcrResult res) async {
+    await widget.db.insert(
+      'ocr_cache',
+      {
+        'item_id': widget.itemId,
+        'image_path': imagePath,
+        'raw_text': res.rawText,
+        'sentences_json': jsonEncode(res.sentences.map((e) => e.toMap()).toList()),
+        'updated_at': unixSeconds(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> _runOcr({bool auto = false}) async {
+    if (!imageExists || imagePath == null) {
+      if (!auto) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有图片可提取')));
+      }
+      return;
+    }
+    if (!geminiClient.enabled) {
+      if (!auto) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未配置 GEMINI_API_KEY，无法调用 AI')));
+      }
+      return;
+    }
+
+    setState(() {
+      extractingOcr = true;
+    });
+
+    try {
+      final res = await geminiClient.extractImageText(File(imagePath!));
+      await _persistOcrCache(res);
+      if (!mounted) return;
+      setState(() {
+        ocrResult = res;
+        ocrCached = true;
+      });
+    } catch (e) {
+      if (!auto && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('提取失败：$e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          extractingOcr = false;
+        });
+      }
+    }
   }
 
   Future<void> _load() async {
@@ -542,11 +629,17 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
       final a = media.where((e) => e['type'] == 'audio').toList();
       final img = media.where((e) => e['type'] == 'image').toList();
 
-      audioPath = a.isEmpty ? null : resolveMediaPath((a.first['path'] as String).trim());
-      imagePath = img.isEmpty ? null : resolveMediaPath((img.first['path'] as String).trim());
+      audioPath = a.isEmpty ? null : resolveMediaPath((a.first['path'] as String).trim(), widget.baseDir);
+      imagePath = img.isEmpty ? null : resolveMediaPath((img.first['path'] as String).trim(), widget.baseDir);
 
       audioExists = audioPath != null && File(audioPath!).existsSync();
       imageExists = imagePath != null && File(imagePath!).existsSync();
+
+      await _loadOcrCache();
+      if (!ocrCached && imageExists && geminiClient.enabled && !_autoOcrStarted) {
+        _autoOcrStarted = true;
+        Future.microtask(() => _runOcr(auto: true));
+      }
     } catch (e) {
       err = '$e';
     } finally {
@@ -596,6 +689,78 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
               ),
             )
             .toList(),
+      ),
+    );
+  }
+
+  Widget _buildOcrCard() {
+    if (!imageExists) return const SizedBox.shrink();
+    final sentences = ocrResult?.sentences ?? [];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.image_search, color: Colors.indigo),
+                const SizedBox(width: 6),
+                Text('AI 图片取字', style: Theme.of(context).textTheme.titleMedium),
+                const Spacer(),
+                if (ocrCached)
+                  Chip(
+                    label: const Text('已缓存'),
+                    backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+                  ),
+                if (extractingOcr)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 8),
+                    child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                  ),
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: extractingOcr ? null : () => _runOcr(),
+                  icon: const Icon(Icons.auto_fix_high),
+                  label: Text(ocrResult == null ? '提取文字' : '重新提取'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (!geminiClient.enabled)
+              const Text('需要在构建时通过 --dart-define=GEMINI_API_KEY=xxx 配置 2.5 flash 密钥后才能调用。'),
+            if (geminiClient.enabled && ocrResult == null && !extractingOcr)
+              const Text('点击“提取文字”将图片中的日语识别、添加假名并翻译，结果会保存在本地，下次无需重复转换。'),
+            if (ocrResult != null) ...[
+              if (ocrResult!.rawText.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text('原文：\n${ocrResult!.rawText}', style: const TextStyle(fontSize: 13)),
+                ),
+              if (sentences.isNotEmpty)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('带假名与翻译：'),
+                    const SizedBox(height: 6),
+                    ...sentences.map(
+                      (s) => Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(s.annotated, style: const TextStyle(fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 2),
+                            Text(s.translation, style: const TextStyle(color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -698,6 +863,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                           ),
                         ),
                       ),
+                    _buildOcrCard(),
                     const SizedBox(height: 8),
                     infoTable,
                   ],
