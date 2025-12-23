@@ -12,6 +12,7 @@ import 'db.dart';
 class PrefKeys {
   static const dbPath = 'content_db_path';
   static const baseDir = 'media_base_dir';
+  static const onboarded = 'onboarded_once';
 }
 
 /// 全局 App 状态（数据库 + 设置）
@@ -19,6 +20,8 @@ class AppModel extends ChangeNotifier {
   Database? _db;
   String? _dbPath;
   String _baseDir = '/storage/emulated/0/にほんご';
+  bool _onboarded = false;
+  bool _loggingUsage = false;
 
   bool _loading = false;
   String? _error;
@@ -28,6 +31,7 @@ class AppModel extends ChangeNotifier {
   String get baseDir => _baseDir;
   bool get loading => _loading;
   String? get error => _error;
+  bool get onboarded => _onboarded;
 
   Future<void> init() async {
     _loading = true;
@@ -37,6 +41,7 @@ class AppModel extends ChangeNotifier {
       final sp = await SharedPreferences.getInstance();
       _dbPath = sp.getString(PrefKeys.dbPath);
       _baseDir = sp.getString(PrefKeys.baseDir) ?? _baseDir;
+      _onboarded = sp.getBool(PrefKeys.onboarded) ?? false;
 
       await _prepareBundledDbIfNeeded();
 
@@ -58,6 +63,7 @@ class AppModel extends ChangeNotifier {
       await sp.setString(PrefKeys.dbPath, _dbPath!);
     }
     await sp.setString(PrefKeys.baseDir, _baseDir);
+    await sp.setBool(PrefKeys.onboarded, _onboarded);
   }
 
   /// 将内置词库拷贝到应用沙盒，避免手工导入
@@ -90,6 +96,36 @@ class AppModel extends ChangeNotifier {
 
   Future<void> setBaseDir(String dir) async {
     _baseDir = dir.trim();
+    await savePrefs();
+    notifyListeners();
+  }
+
+  Future<void> logUsage({int seconds = 0, int detailOpens = 0, int remembered = 0, int forgotten = 0}) async {
+    final db = _db;
+    if (db == null || (seconds == 0 && detailOpens == 0 && remembered == 0 && forgotten == 0)) return;
+
+    // 避免同时被多个入口重入
+    if (_loggingUsage) return;
+    _loggingUsage = true;
+    try {
+      final day = epochDay(DateTime.now());
+      await db.insert(
+        'usage_stats',
+        {'day': day},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+
+      await db.rawUpdate(
+        'UPDATE usage_stats SET seconds=seconds+?, detail_opens=detail_opens+?, remembered=remembered+?, forgotten=forgotten+? WHERE day=?',
+        [seconds, detailOpens, remembered, forgotten, day],
+      );
+    } finally {
+      _loggingUsage = false;
+    }
+  }
+
+  Future<void> markOnboarded() async {
+    _onboarded = true;
     await savePrefs();
     notifyListeners();
   }
@@ -150,8 +186,10 @@ class AppScope extends InheritedNotifier<AppModel> {
 
   static AppModel of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
-    assert(scope != null, 'AppScope not found');
-    return scope!.notifier!;
+    if (scope == null) {
+      throw FlutterError('AppScope not found. 请确认 AppRoot 包裹在 MaterialApp 之上');
+    }
+    return scope.notifier!;
   }
 }
 
